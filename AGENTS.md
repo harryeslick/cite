@@ -3,6 +3,10 @@
 `cite` is a deterministic citation manager you drive from the shell. You supply
 judgement; the tool supplies reproducible bookkeeping.
 
+Invoke it as `cite ...` when installed globally (`uv tool install`), or
+`uv run cite ...` from this repo in dev — the commands below use `uv run`; drop
+that prefix when `cite` is on your PATH.
+
 **Load the contract first:** `uv run cite guide --json` returns the command list,
 the 7 allowed citation types, and the required fields for each. Every command
 prints one JSON object with a `status` field — read it and follow

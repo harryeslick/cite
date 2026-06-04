@@ -14,6 +14,10 @@ dependencies = [
 
 [project.scripts]
 cite = "cite.cli:app"
+cite-mcp = "cite.mcp:main"
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
 
 [dependency-groups]
 dev = [

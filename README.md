@@ -23,13 +23,39 @@ both standard-compliant and self-tracking.
 
 ## Install / run
 
+**Develop in this repo** (the `uv run` prefix resolves `cite` from this project's
+`.venv`):
+
 ```bash
-uv sync           # install dependencies
-uv run cite guide # print the full agent-facing contract
-uv run pytest     # run the test suite
+uv sync --extra mcp   # install deps incl. the optional MCP server
+uv run cite guide     # print the full agent-facing contract
+uv run pytest         # run the test suite
 ```
 
-The library lives at `--library <path>`, else `$CITE_LIBRARY`, else `./library`:
+**Install globally** to use `cite` from any directory (no `uv run`, no project
+root) — `uv tool install` puts `cite` and `cite-mcp` on your PATH:
+
+```bash
+# from this local checkout (works now, no git remote needed):
+uv tool install "/path/to/cite[mcp]"      # add -e for an editable install
+# or, once pushed to a remote, shareable:
+uv tool install "cite[mcp] @ git+https://github.com/harryeslick/cite.git"
+```
+
+Drop the `[mcp]` extra if you only want the CLI. `uv tool update cite` re-pulls
+from the same source.
+
+### Library location
+
+The library resolves from `--library <path>`, else `$CITE_LIBRARY`, else
+`./library`. Two common setups:
+
+- **One central library** (a single personal collection reachable everywhere) —
+  add `export CITE_LIBRARY="$HOME/citations"` to your shell profile.
+- **Per-project library** — pass `--library ./library`, or set a project-local
+  `CITE_LIBRARY`, to scope citations to one project.
+
+Either way the library is laid out as:
 
 ```
 library/
@@ -130,8 +156,41 @@ Ideas not yet implemented, in rough priority order:
   search backends (PubMed, Semantic Scholar) — the `search/` package is
   structured to accept new backends with minimal change.
 
+- **Topic-based citation lists.** A command (e.g. `cite list --topic <name>`)
+  that creates a curated subset of the library filtered by topic, exported to a
+  file or JSON object. Enables organization of citations by research area or
+  project — e.g. "machine learning", "climate science" — without reorganizing
+  the core library. Could be backed by metadata tags in the `_provenance` block
+  or a simple topic-to-id mapping file.
+
 ## For agents
 
-The intended entry point in Claude Code is the **`cite` skill**
-(`skills/cite/SKILL.md`). Other agents should read `AGENTS.md` and call
-`cite guide --json` to load the contract.
+For **shell-capable agents** (Claude Code, Codex, …) the entry point in Claude
+Code is the **`cite` skill** (`skills/cite/SKILL.md`); other agents read
+`AGENTS.md` and call `cite guide --json` to load the contract. When `cite` is
+installed globally, invoke it as plain `cite …` — `uv run cite …` is the in-repo
+dev form.
+
+### MCP server (`cite-mcp`)
+
+For clients that call typed tools instead of a shell (Claude Desktop, Cursor,
+…), `cite[mcp]` ships a thin MCP server, `cite-mcp`. It adds no logic — each tool
+shells out to `cite` and returns its JSON unchanged, so the CLI stays the single
+source of truth. The tools mirror the CLI's deterministic operations: `guide`,
+`peek`, `search`, `add_by_doi` / `add_from_csl` / `add_manual`, `validate`,
+`list`, `get`, `remove`, `export`.
+
+Register it (set `CITE_LIBRARY` so the server knows which library to use):
+
+```bash
+# Claude Code (project .mcp.json, or globally)
+claude mcp add cite --env CITE_LIBRARY="$HOME/citations" -- cite-mcp
+```
+
+```json
+// Claude Desktop — claude_desktop_config.json
+{ "mcpServers": { "cite": { "command": "cite-mcp",
+    "env": { "CITE_LIBRARY": "/Users/you/citations" } } } }
+```
+
+Stateful tools also accept a `library` argument to override per call.

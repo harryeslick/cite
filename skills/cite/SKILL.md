@@ -10,9 +10,10 @@ right database match, ask the user for missing facts); the tool does the
 mechanical work (search, validate, hash, rename, write the record). Keep tokens
 low by letting the tool do the deterministic parts and reading its JSON output.
 
-Run commands with `uv run cite ...` from the project root. **Every command
-prints one JSON object** with a `status` field — read it and follow
-`suggested_next` / `hint`.
+Run commands as `cite ...` if installed globally (`uv tool install`), or
+`uv run cite ...` from this repo's root in dev. The examples below use `uv run`;
+drop that prefix when `cite` is on your PATH. **Every command prints one JSON
+object** with a `status` field — read it and follow `suggested_next` / `hint`.
 
 ## The contract
 Run `uv run cite guide --json` once to load the full command list, the 7
