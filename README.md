@@ -156,6 +156,17 @@ Ideas not yet implemented, in rough priority order:
   search backends (PubMed, Semantic Scholar) — the `search/` package is
   structured to accept new backends with minimal change.
 
+- **Citation dependency graph** *(likely a new sibling tool, not `cite` itself)*.
+  Extract the references *within* each document and build a dependency graph of
+  research papers — who cites whom — maintained as its own datastore. References
+  need not be resolved online; a deterministic fuzzy match (reusing the near-dup
+  DOI / title-author-year scoring above) identifies duplicates and links each
+  extracted reference to a paper already in the graph. Per SUITE.md §1 the *agent*
+  parses each bibliography (fuzzy work) and the tool deterministically scores and
+  records the edges. Cleanest as a single-job sibling (e.g. `xref`) depending on
+  `cite` via its published interface (`cite get <id>`), keeping `cite` the
+  foundation that owns only the canonical library.
+
 - **Topic-based citation lists.** A command (e.g. `cite list --topic <name>`)
   that creates a curated subset of the library filtered by topic, exported to a
   file or JSON object. Enables organization of citations by research area or
