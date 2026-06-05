@@ -27,13 +27,20 @@ import typer
 from cite.guide import guide as build_guide
 from cite.models import (
     PROVENANCE_KEY,
+    SPEC_VERSION,
     Provenance,
     cite_type_from_csl,
     csl_type_for,
     genre_for,
     issued_year,
 )
-from cite.naming import build_filename, content_hash, record_id
+from cite.naming import (
+    build_filename,
+    content_hash,
+    local_id,
+    namespaced_id,
+    record_id,
+)
 from cite.search import search as run_search
 from cite.store import Library
 from cite.validate import validate as run_validate
@@ -54,8 +61,16 @@ _HELPER_KEYS = ("source", "source_id", "_cite_type")
 # --------------------------------------------------------------------------- #
 
 
-def _emit(obj: Any) -> None:
-    """Print a JSON result to stdout (the one channel the agent parses)."""
+def _emit(obj: Any, *, raw: bool = False) -> None:
+    """Print a JSON result to stdout (the one channel the agent parses).
+
+    Every response *envelope* (a dict) is stamped with the suite spec version
+    (SUITE.md §3) so agents and sibling tools can detect the protocol. Raw record
+    payloads — e.g. the CSL-JSON record returned by `get` — pass through with
+    raw=True: the spec belongs to the envelope, not to the stored record.
+    """
+    if isinstance(obj, dict) and not raw and "spec" not in obj:
+        obj = {**obj, "spec": SPEC_VERSION}
     typer.echo(json.dumps(obj, indent=2, ensure_ascii=False))
 
 
@@ -233,7 +248,7 @@ def add(
         _emit({
             "status": "duplicate",
             "message": "identical file already in library",
-            "id": prov.get("new_filename", "").rsplit(".", 1)[0],
+            "id": namespaced_id(prov.get("new_filename", "").rsplit(".", 1)[0]),
             "existing": prov,
         })
         return
@@ -259,7 +274,7 @@ def add(
 
     _emit({
         "status": "added",
-        "id": rid,
+        "id": namespaced_id(rid),
         "new_filename": new_filename,
         "cite_type": cite_type,
         "record": record,
@@ -290,7 +305,7 @@ def list_(
     for r in records:
         prov = r.get(PROVENANCE_KEY, {})
         summaries.append({
-            "id": prov.get("new_filename", "").rsplit(".", 1)[0],
+            "id": namespaced_id(prov.get("new_filename", "").rsplit(".", 1)[0]),
             "cite_type": prov.get("cite_type"),
             "title": r.get("title"),
             "year": issued_year(r),
@@ -301,30 +316,38 @@ def list_(
 
 @app.command()
 def get(
-    id: str = typer.Argument(..., help="Record id (filename stem)."),
+    id: str = typer.Argument(..., help="Record id; bare stem or namespaced (cite:<stem>)."),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
     """Print one reference record."""
     lib = _resolve_library(library)
+    stem = local_id(id)
     try:
-        _emit(lib.read_record(id))
+        # The record itself is a raw CSL-JSON payload, not an envelope — emit it
+        # untouched (no spec stamp); the spec belongs to control responses.
+        _emit(lib.read_record(stem), raw=True)
     except FileNotFoundError:
-        _emit({"status": "not_found", "id": id})
+        _emit({"status": "not_found", "id": namespaced_id(stem)})
 
 
 @app.command()
 def remove(
-    id: str = typer.Argument(..., help="Record id (filename stem)."),
+    id: str = typer.Argument(..., help="Record id; bare stem or namespaced (cite:<stem>)."),
     delete_file: bool = typer.Option(False, help="Also delete the stored file."),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
     """Remove a reference (and optionally its file) from the library."""
     lib = _resolve_library(library)
+    stem = local_id(id)
     try:
-        lib.remove(id, delete_file=delete_file)
-        _emit({"status": "removed", "id": id, "deleted_file": delete_file})
+        lib.remove(stem, delete_file=delete_file)
+        _emit({
+            "status": "removed",
+            "id": namespaced_id(stem),
+            "deleted_file": delete_file,
+        })
     except FileNotFoundError:
-        _emit({"status": "not_found", "id": id})
+        _emit({"status": "not_found", "id": namespaced_id(stem)})
 
 
 @app.command()

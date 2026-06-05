@@ -29,7 +29,7 @@ def test_validate_reports_missing_fields():
 
 def test_list_empty_library(tmp_path):
     out = json.loads(cite_mcp.list_refs(library=str(tmp_path / "lib")))
-    assert out == {"count": 0, "references": []}
+    assert out == {"count": 0, "references": [], "spec": "suite/1"}
 
 
 def test_add_manual_then_list_then_remove(tmp_path):

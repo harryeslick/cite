@@ -20,6 +20,17 @@ from typing import Any, Literal, get_args
 from pydantic import BaseModel, Field
 
 # --------------------------------------------------------------------------- #
+# Suite conformance (see SUITE.md)
+# --------------------------------------------------------------------------- #
+
+# Version of the shared response-envelope protocol this tool emits. Stamped onto
+# every agent-facing response envelope so agents / sibling tools can detect the
+# contract version. Bump only when the envelope, id scheme, or status vocabulary
+# changes.
+SPEC_VERSION = "suite/1"
+
+
+# --------------------------------------------------------------------------- #
 # Controlled vocabulary of citation types (the 7 the tool supports)
 # --------------------------------------------------------------------------- #
 

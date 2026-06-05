@@ -11,6 +11,34 @@ from cite.models import issued_year
 
 _CHUNK = 65536  # 64 KB
 
+# Suite-wide identity namespace (see SUITE.md §2). A record's *local* id is the
+# filename stem (`<year>-<a1>-<a2>-<title>_<hash6>`); its *logical* id — the one
+# emitted in JSON and used as a cross-tool foreign key — is that stem prefixed
+# with this namespace, e.g. `cite:2023-smith-...`. The prefix is stripped before
+# the id ever touches the filesystem, so stored filenames stay colon-free.
+ID_NAMESPACE = "cite"
+_ID_PREFIX = f"{ID_NAMESPACE}:"
+
+
+def namespaced_id(local_id: str) -> str:
+    """Prefix a bare local id (filename stem) with the suite namespace.
+
+    Idempotent: an already-namespaced id is returned unchanged.
+    """
+    if local_id.startswith(_ID_PREFIX):
+        return local_id
+    return f"{_ID_PREFIX}{local_id}"
+
+
+def local_id(any_id: str) -> str:
+    """Strip the suite namespace prefix, yielding the on-disk filename stem.
+
+    Accepts either form, so callers can pass `cite:2023-x` or the bare `2023-x`.
+    """
+    if any_id.startswith(_ID_PREFIX):
+        return any_id[len(_ID_PREFIX):]
+    return any_id
+
 
 def content_hash(path: Path) -> str:
     """Full SHA-256 hex of the file's bytes (streamed in 64 KB chunks)."""
@@ -29,9 +57,12 @@ def short_hash(full_hash: str, n: int = 6) -> str:
 def author_components(record: dict) -> tuple[str, str]:
     """Return (author1_slug, author2_slot) for the filename.
 
-    Rules based on the record's `author` list (fallback to `editor` if no author):
-      - 0 authors  -> ("none", "none")
-      - 1 author   -> (slug(family or literal), "none")
+    The second slot modifies the first author and is **empty** when there is
+    nothing to put there; `build_filename` drops empty slots so no literal
+    placeholder ever appears in a filename. Rules, based on the record's
+    `author` list (fallback to `editor` if no author):
+      - 0 authors  -> ("", "")             # no author segment at all
+      - 1 author   -> (slug(family/literal), "")
       - 2 authors  -> (slug(fam1), slug(fam2))
       - 3+ authors -> (slug(fam1), "etal")
     """
@@ -44,9 +75,9 @@ def author_components(record: dict) -> tuple[str, str]:
 
     n = len(authors)
     if n == 0:
-        return ("none", "none")
+        return ("", "")
     if n == 1:
-        return (_name(authors[0]), "none")
+        return (_name(authors[0]), "")
     if n == 2:
         return (_name(authors[0]), _name(authors[1]))
     # 3+
@@ -54,21 +85,25 @@ def author_components(record: dict) -> tuple[str, str]:
 
 
 def build_filename(record: dict, full_hash: str, ext: str) -> str:
-    """Compose `<year>-<author1>-<author2|etal|none>-<title>_<shorthash>.<ext>`.
+    """Compose `<year>-<author1>[-<author2|etal>]-<title>_<shorthash>.<ext>`.
 
     - year   = issued_year(record) or 'nd'
+    - author slots = author_components(record); empty slots are omitted, so a
+      single-author file is `<year>-<author1>-<title>...` (no placeholder) and
+      an author-less file is `<year>-<title>...`.
     - title  = slugified title, word-boundary truncated to <= 40 chars
     - ext    = original extension WITHOUT leading dot; if empty, omit the dot
     - shorthash = short_hash(full_hash)
     """
-    year = issued_year(record) or "nd"
+    year = str(issued_year(record) or "nd")
     a1, a2 = author_components(record)
     raw_title = record.get("title") or ""
     title_slug = slugify(raw_title, max_length=40, word_boundary=True)
     if not title_slug:
         title_slug = "untitled"
     sh = short_hash(full_hash)
-    stem = f"{year}-{a1}-{a2}-{title_slug}_{sh}"
+    parts = [p for p in (year, a1, a2, title_slug) if p]
+    stem = f"{'-'.join(parts)}_{sh}"
     if ext:
         return f"{stem}.{ext}"
     return stem

@@ -61,8 +61,8 @@ def test_add_manual_complete_then_duplicate_then_list(tmp_path):
     assert added["status"] == "added"
     assert added["record"]["type"] == "report"
     assert added["record"]["genre"] == "trial report"
-    # 3 authors -> first author + 'etal'
-    assert added["id"].startswith("2023-smith-etal-")
+    # 3 authors -> first author + 'etal'; ids are emitted namespaced (cite:<stem>)
+    assert added["id"].startswith("cite:2023-smith-etal-")
     assert added["record"]["_provenance"]["source"] == "manual"
 
     # Same bytes -> dedup gate fires.
@@ -99,3 +99,30 @@ def test_get_and_remove(tmp_path):
     assert removed["status"] == "removed"
     # File is gone from disk.
     assert not any((Path(lib) / "files").iterdir())
+
+
+def test_id_is_namespaced_and_get_accepts_either_form(tmp_path):
+    f = _sample_file(tmp_path)
+    lib = str(tmp_path / "lib")
+    added = _run([
+        "add", str(f), "--manual", "--type", "other-report",
+        "--field", "title=Annual Report",
+        "--field", "publisher=Agency",
+        "--field", "issued=2022",
+        "--library", lib,
+    ])
+    rid = added["id"]
+    assert rid.startswith("cite:")              # logical id is namespaced
+    assert added["spec"] == "suite/1"           # envelope stamped with protocol
+
+    # get accepts the bare stem too (namespace prefix is optional on input)...
+    bare = rid.split(":", 1)[1]
+    got = _run(["get", bare, "--library", lib])
+    assert got["title"] == "Annual Report"
+    # ...and the returned record is a raw payload, not an envelope (no spec stamp).
+    assert "spec" not in got
+
+
+def test_guide_advertises_spec_version():
+    data = json.loads(runner.invoke(app, ["guide", "--json"]).output)
+    assert data["spec"] == "suite/1"

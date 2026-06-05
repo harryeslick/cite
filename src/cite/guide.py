@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from cite.models import CITE_TYPES, REQUIRED_FIELDS, TYPE_MAP
+from cite.models import CITE_TYPES, REQUIRED_FIELDS, SPEC_VERSION, TYPE_MAP
 
 # --------------------------------------------------------------------------- #
 # Static command descriptions
@@ -44,7 +44,10 @@ _NOTES = (
     "new filename, date added, file hash, source) is stored under the `_provenance` key "
     "inside each record; CSL processors ignore underscore-prefixed keys. "
     "Deduplication is performed by content hash (SHA-256), so adding the same file twice "
-    "is a no-op. Citation types are limited to the 7 listed in 'types'."
+    "is a no-op. Citation types are limited to the 7 listed in 'types'. "
+    "Record ids are emitted in namespaced form `cite:<stem>` (the cross-tool foreign-key "
+    "form); get/remove accept either the namespaced id or the bare stem. Every response "
+    "envelope carries a `spec` field naming the protocol version (see 'spec')."
 )
 
 # --------------------------------------------------------------------------- #
@@ -89,6 +92,7 @@ def guide(as_json: bool = False) -> str:
       groups as 'a|b'). Otherwise return a readable plain-text version of the same.
     """
     data = {
+        "spec": SPEC_VERSION,
         "workflow": _WORKFLOW,
         "commands": _COMMANDS,
         "types": _build_types(),

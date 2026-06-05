@@ -22,15 +22,15 @@ from cite.naming import (
 
 
 def test_author_components_zero():
-    assert author_components({}) == ("none", "none")
-    assert author_components({"author": []}) == ("none", "none")
+    assert author_components({}) == ("", "")
+    assert author_components({"author": []}) == ("", "")
 
 
 def test_author_components_one():
     record = {"author": [{"family": "Smith", "given": "J."}]}
     a1, a2 = author_components(record)
     assert a1 == "smith"
-    assert a2 == "none"
+    assert a2 == ""
 
 
 def test_author_components_two():
@@ -57,7 +57,7 @@ def test_author_components_org_literal():
     record = {"author": [{"literal": "World Health Organization"}]}
     a1, a2 = author_components(record)
     assert a1 == "world-health-organization"
-    assert a2 == "none"
+    assert a2 == ""
 
 
 def test_author_components_fallback_to_editor():
@@ -110,14 +110,31 @@ def test_build_filename_golden_two_authors():
 def test_build_filename_no_date():
     record = _make_record("A study of things", [{"family": "Jones"}])
     name = build_filename(record, _FAKE_HASH, "pdf")
-    assert name.startswith("nd-jones-none-")
+    # single author -> no second-author slot, no literal placeholder
+    assert name.startswith("nd-jones-a-study-of-things")
+    assert "-none-" not in name
 
 
 def test_build_filename_no_ext():
     record = _make_record("Test title", [{"family": "Doe"}], 2020)
     name = build_filename(record, _FAKE_HASH, "")
     assert "." not in name
-    assert name.startswith("2020-doe-none-")
+    assert name.startswith("2020-doe-test-title")
+    assert "-none-" not in name
+
+
+def test_build_filename_single_author_no_placeholder():
+    """One author -> `<year>-<author1>-<title>`, no empty second slot."""
+    record = _make_record("Solo work", [{"family": "Solo"}], 2019)
+    name = build_filename(record, _FAKE_HASH, "pdf")
+    assert name == f"2019-solo-solo-work_{_FAKE_HASH[:6]}.pdf"
+
+
+def test_build_filename_no_authors_omits_author_segment():
+    """Zero authors -> `<year>-<title>`, no author segment at all."""
+    record = _make_record("Anonymous report", [], 2017)
+    name = build_filename(record, _FAKE_HASH, "pdf")
+    assert name == f"2017-anonymous-report_{_FAKE_HASH[:6]}.pdf"
 
 
 def test_build_filename_long_title_truncated():
@@ -125,7 +142,8 @@ def test_build_filename_long_title_truncated():
     record = _make_record(long_title, [{"family": "Author"}], 2022)
     name = build_filename(record, _FAKE_HASH, "pdf")
     stem = name.rsplit(".", 1)[0]
-    title_part = stem.split("-", 3)[3].rsplit("_", 1)[0]
+    # single author: year, author1, then the title (split off the first 2 dashes)
+    title_part = stem.split("-", 2)[2].rsplit("_", 1)[0]
     assert len(title_part) <= 40
 
 
