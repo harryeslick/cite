@@ -95,6 +95,24 @@ REQUIRED_FIELDS: dict[str, list[Requirement]] = {
 # --------------------------------------------------------------------------- #
 
 
+class Extraction(BaseModel):
+    """Record of a full-markdown extraction (see `cite extract`).
+
+    Stored under `_provenance.extraction`. Docling is ML-based, so output is
+    reproducible only relative to a pinned `extractor_version` — we record it so
+    a stale extraction (file changed, or extractor upgraded) is detectable later.
+    """
+
+    extractor: str  # e.g. "docling"
+    extractor_version: str
+    vlm_model: str  # e.g. "granite_docling"
+    image_export_mode: str  # e.g. "referenced"
+    extracted_at: str  # ISO-8601 UTC
+    source_file_hash: str  # full SHA-256 of the bytes the markdown came from
+    markdown_path: str  # "<id>/<id>.md", relative to the library root
+    n_images: int
+
+
 class Provenance(BaseModel):
     """Custom metadata tracked alongside the standard CSL fields."""
 
@@ -105,6 +123,7 @@ class Provenance(BaseModel):
     file_hash: str  # full SHA-256 hex of the file's bytes
     source: Literal["crossref", "datacite", "openalex", "manual"]
     source_id: str | None = None  # DOI / OpenAlex ID, when applicable
+    extraction: Extraction | None = None  # set by `cite extract`
 
 
 PROVENANCE_KEY = "_provenance"

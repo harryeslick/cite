@@ -17,7 +17,10 @@ _COMMANDS = [
     {"name": "validate", "summary": "Check that a record has all required fields for its cite_type."},
     {"name": "list", "summary": "List all records in the library (brief summary view)."},
     {"name": "get", "summary": "Retrieve the full CSL-JSON record for a given record id."},
-    {"name": "remove", "summary": "Remove a record from the library (optionally also delete the stored file)."},
+    {"name": "remove", "summary": "Remove a record from the library (deletes the whole reference bundle)."},
+    {"name": "extract", "summary": "Extract full markdown for a reference via a local Docling VLM (optional 'extract' extra)."},
+    {"name": "text", "summary": "Print a reference's extracted markdown, or its path with --path-only."},
+    {"name": "migrate-layout", "summary": "Migrate a legacy refs/+files/ library to per-entity bundles (idempotent)."},
     {"name": "export", "summary": "Export library records as CSL-JSON or another format."},
     {"name": "guide", "summary": "Print this agent usage contract (add --json for machine-readable form)."},
 ]
@@ -47,7 +50,12 @@ _NOTES = (
     "is a no-op. Citation types are limited to the 7 listed in 'types'. "
     "Record ids are emitted in namespaced form `cite:<stem>` (the cross-tool foreign-key "
     "form); get/remove accept either the namespaced id or the bare stem. Every response "
-    "envelope carries a `spec` field naming the protocol version (see 'spec')."
+    "envelope carries a `spec` field naming the protocol version (see 'spec'). "
+    "Each reference is a self-contained bundle directory `<id>/` holding the record "
+    "(`<id>.json`), the original file (`<id>.<ext>`), and any extracted markdown "
+    "(`<id>.md` + `<id>_artifacts/`). Full-markdown extraction (`cite extract`) is an "
+    "optional, fully-local feature requiring the `extract` extra (Docling); the rest of "
+    "cite works without it."
 )
 
 # --------------------------------------------------------------------------- #

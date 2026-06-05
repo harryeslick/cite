@@ -95,10 +95,11 @@ def test_get_and_remove(tmp_path):
     got = _run(["get", rid, "--library", lib])
     assert got["title"] == "Annual Report"
 
-    removed = _run(["remove", rid, "--delete-file", "--library", lib])
+    removed = _run(["remove", rid, "--library", lib])
     assert removed["status"] == "removed"
-    # File is gone from disk.
-    assert not any((Path(lib) / "files").iterdir())
+    # The whole reference bundle is gone from disk.
+    stem = rid.split(":", 1)[1]
+    assert not (Path(lib) / stem).exists()
 
 
 def test_id_is_namespaced_and_get_accepts_either_form(tmp_path):

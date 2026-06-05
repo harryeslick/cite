@@ -28,6 +28,7 @@ from cite.guide import guide as build_guide
 from cite.models import (
     PROVENANCE_KEY,
     SPEC_VERSION,
+    Extraction,
     Provenance,
     cite_type_from_csl,
     csl_type_for,
@@ -268,8 +269,8 @@ def add(
     )
     record[PROVENANCE_KEY] = provenance.model_dump(exclude_none=True)
 
-    # 5. Commit: copy the file in, write the record.
-    lib.store_file(file, new_filename)
+    # 5. Commit: copy the file into the reference's bundle, write the record.
+    lib.store_file(file, rid, new_filename)
     lib.write_record(rid, record)
 
     _emit({
@@ -333,21 +334,136 @@ def get(
 @app.command()
 def remove(
     id: str = typer.Argument(..., help="Record id; bare stem or namespaced (cite:<stem>)."),
-    delete_file: bool = typer.Option(False, help="Also delete the stored file."),
+    delete_file: bool = typer.Option(
+        False, help="Deprecated/no-op: removal now deletes the whole reference bundle."
+    ),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
-    """Remove a reference (and optionally its file) from the library."""
+    """Remove a reference from the library.
+
+    A reference is a self-contained bundle directory, so removal is all-or-nothing:
+    the record, the original file, and any extracted markdown/artifacts go together.
+    The legacy ``--delete-file`` flag is accepted but ignored.
+    """
     lib = _resolve_library(library)
     stem = local_id(id)
     try:
-        lib.remove(stem, delete_file=delete_file)
+        lib.remove(stem)
         _emit({
             "status": "removed",
             "id": namespaced_id(stem),
-            "deleted_file": delete_file,
+            "deleted_file": True,
         })
     except FileNotFoundError:
         _emit({"status": "not_found", "id": namespaced_id(stem)})
+
+
+@app.command()
+def extract(
+    id: str = typer.Argument(..., help="Record id; bare stem or namespaced (cite:<stem>)."),
+    vlm_model: str = typer.Option(
+        "granite_docling", help="Docling VLM model preset to use."
+    ),
+    library: Path | None = typer.Option(None, help="Library root."),
+) -> None:
+    """Extract full markdown for a stored reference using a local Docling VLM.
+
+    Optional feature — requires the ``extract`` extra (`uv tool install
+    'cite[extract]'`). All processing is local/private. The markdown and its
+    referenced images are written into the reference's bundle as
+    ``<id>/<id>.md`` + ``<id>/<id>_artifacts/``; re-running overwrites prior
+    output. The extractor name + version are recorded under
+    ``_provenance.extraction`` so a stale extraction is detectable later.
+    """
+    # Lazy import: cite.extract never pulls docling at import time, but keep the
+    # CLI's startup path clear of the extraction facade until it's actually used.
+    from cite.extract import ExtractorUnavailable, extract_to_markdown
+
+    lib = _resolve_library(library)
+    stem = local_id(id)
+    try:
+        record = lib.read_record(stem)
+    except FileNotFoundError:
+        _emit({"status": "not_found", "id": namespaced_id(stem)})
+        return
+
+    prov = record.get(PROVENANCE_KEY, {})
+    new_filename = prov.get("new_filename")
+    src = lib.entry_dir(stem) / new_filename if new_filename else None
+    if src is None or not src.exists():
+        _emit({
+            "status": "error",
+            "id": namespaced_id(stem),
+            "message": "stored source file not found for this reference",
+        })
+        raise typer.Exit(code=1)
+
+    lib.clear_text(stem)  # idempotent re-extract: wipe any prior output first
+    try:
+        result = extract_to_markdown(src, lib.text_path(stem), vlm_model=vlm_model)
+    except ExtractorUnavailable as e:
+        _emit({"status": "error", "message": str(e), "hint": "install cite[extract]"})
+        raise typer.Exit(code=1)
+    except Exception as e:  # docling runtime failure — surface, don't crash
+        _emit({"status": "error", "message": f"extraction failed: {e}"})
+        raise typer.Exit(code=1)
+
+    md_rel = f"{stem}/{stem}.md"
+    extraction = Extraction(
+        extractor=result["extractor"],
+        extractor_version=result["extractor_version"],
+        vlm_model=result["vlm_model"],
+        image_export_mode=result["image_export_mode"],
+        extracted_at=_now_iso(),
+        source_file_hash=prov.get("file_hash") or content_hash(src),
+        markdown_path=md_rel,
+        n_images=result["n_images"],
+    )
+    prov["extraction"] = extraction.model_dump(exclude_none=True)
+    record[PROVENANCE_KEY] = prov
+    lib.write_record(stem, record)
+
+    _emit({
+        "status": "ok",
+        "id": namespaced_id(stem),
+        "markdown_path": md_rel,
+        "n_images": result["n_images"],
+        "extractor": result["extractor"],
+        "extractor_version": result["extractor_version"],
+    })
+
+
+@app.command()
+def text(
+    id: str = typer.Argument(..., help="Record id; bare stem or namespaced (cite:<stem>)."),
+    path_only: bool = typer.Option(
+        False, "--path-only", help="Print the markdown file path instead of its content."
+    ),
+    library: Path | None = typer.Option(None, help="Library root."),
+) -> None:
+    """Print a reference's extracted markdown (or its path with --path-only).
+
+    Emits a JSON ``not_found`` envelope if the reference has not been extracted yet.
+    """
+    lib = _resolve_library(library)
+    stem = local_id(id)
+    if not lib.text_path(stem).exists():
+        _emit({
+            "status": "not_found",
+            "id": namespaced_id(stem),
+            "hint": "run `cite extract <id>` first (needs the 'extract' extra)",
+        })
+        return
+    typer.echo(str(lib.text_path(stem)) if path_only else lib.read_text(stem))
+
+
+@app.command(name="migrate-layout")
+def migrate_layout(
+    library: Path | None = typer.Option(None, help="Library root."),
+) -> None:
+    """Migrate a legacy refs/ + files/ library to per-entity bundles (idempotent)."""
+    lib = _resolve_library(library)
+    _emit({"status": "ok", **lib.migrate_layout()})
 
 
 @app.command()

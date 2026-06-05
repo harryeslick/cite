@@ -1,4 +1,4 @@
-"""Tests for cite.store.Library."""
+"""Tests for cite.store.Library (per-entity bundle layout)."""
 
 import json
 from pathlib import Path
@@ -26,13 +26,14 @@ def _make_record(file_hash: str = "abc123", new_filename: str = "doc.pdf") -> di
 
 
 class TestInit:
-    def test_init_creates_dirs_and_toml(self, tmp_path: Path):
+    def test_init_creates_root_and_toml(self, tmp_path: Path):
         lib = Library(tmp_path / "mylib")
         lib.init()
         assert lib.root.is_dir()
-        assert lib.refs_dir.is_dir()
-        assert lib.files_dir.is_dir()
         assert (lib.root / "cite.toml").exists()
+        # No fixed sub-trees — bundle dirs are created lazily on write.
+        assert not (lib.root / "refs").exists()
+        assert not (lib.root / "files").exists()
 
     def test_init_is_idempotent(self, tmp_path: Path):
         lib = Library(tmp_path / "mylib")
@@ -52,18 +53,18 @@ class TestWriteAndReadRecord:
     def test_round_trip(self, tmp_path: Path):
         lib = Library(tmp_path / "lib")
         lib.init()
-        record = _make_record()
-        lib.write_record("rec001", record)
+        lib.write_record("rec001", _make_record())
         loaded = lib.read_record("rec001")
         assert loaded["title"] == "Test Record"
         assert loaded[PROVENANCE_KEY]["file_hash"] == "abc123"
 
-    def test_write_returns_path(self, tmp_path: Path):
+    def test_write_creates_bundle_dir_and_returns_path(self, tmp_path: Path):
         lib = Library(tmp_path / "lib")
         lib.init()
         path = lib.write_record("rec001", _make_record())
-        assert path == lib.refs_dir / "rec001.json"
+        assert path == lib.root / "rec001" / "rec001.json"
         assert path.exists()
+        assert lib.entry_dir("rec001").is_dir()
 
     def test_read_missing_raises(self, tmp_path: Path):
         lib = Library(tmp_path / "lib")
@@ -75,8 +76,7 @@ class TestWriteAndReadRecord:
         lib = Library(tmp_path / "lib")
         lib.init()
         lib.write_record("rec001", _make_record())
-        text = (lib.refs_dir / "rec001.json").read_text()
-        # Pretty JSON has newlines and indentation
+        text = lib.record_path("rec001").read_text()
         assert "\n" in text
 
 
@@ -84,8 +84,7 @@ class TestFindByHash:
     def test_returns_record_for_matching_hash(self, tmp_path: Path):
         lib = Library(tmp_path / "lib")
         lib.init()
-        record = _make_record(file_hash="deadbeef")
-        lib.write_record("rec001", record)
+        lib.write_record("rec001", _make_record(file_hash="deadbeef"))
         found = lib.find_by_hash("deadbeef")
         assert found is not None
         assert found["title"] == "Test Record"
@@ -103,13 +102,13 @@ class TestFindByHash:
 
 
 class TestStoreFile:
-    def test_copies_file_to_files_dir(self, tmp_path: Path):
+    def test_copies_file_into_bundle(self, tmp_path: Path):
         lib = Library(tmp_path / "lib")
         lib.init()
         src = tmp_path / "source.txt"
         src.write_text("hello world")
-        dest = lib.store_file(src, "doc-2026.txt")
-        assert dest == lib.files_dir / "doc-2026.txt"
+        dest = lib.store_file(src, "rec001", "rec001.txt")
+        assert dest == lib.entry_dir("rec001") / "rec001.txt"
         assert dest.read_text() == "hello world"
 
     def test_source_remains_after_copy(self, tmp_path: Path):
@@ -117,7 +116,7 @@ class TestStoreFile:
         lib.init()
         src = tmp_path / "source.txt"
         src.write_text("contents")
-        lib.store_file(src, "stored.txt")
+        lib.store_file(src, "rec001", "rec001.txt")
         assert src.exists()
 
     def test_overwrite_existing_dest_is_fine(self, tmp_path: Path):
@@ -125,10 +124,9 @@ class TestStoreFile:
         lib.init()
         src = tmp_path / "v2.txt"
         src.write_text("v2 contents")
-        # write something first
-        (lib.files_dir / "doc.txt").write_text("old")
-        lib.store_file(src, "doc.txt")
-        assert (lib.files_dir / "doc.txt").read_text() == "v2 contents"
+        lib.store_file(tmp_path / "v2.txt", "rec001", "doc.txt")  # first copy
+        lib.store_file(src, "rec001", "doc.txt")  # overwrite
+        assert (lib.entry_dir("rec001") / "doc.txt").read_text() == "v2 contents"
 
 
 class TestListRecords:
@@ -139,7 +137,6 @@ class TestListRecords:
         lib.write_record("rec001", _make_record(file_hash="h1", new_filename="a.pdf"))
         records = lib.list_records()
         assert len(records) == 2
-        # sorted by id: rec001 before rec002
         assert records[0][PROVENANCE_KEY]["file_hash"] == "h1"
         assert records[1][PROVENANCE_KEY]["file_hash"] == "h2"
 
@@ -150,12 +147,17 @@ class TestListRecords:
 
 
 class TestRemove:
-    def test_remove_deletes_ref(self, tmp_path: Path):
+    def test_remove_deletes_whole_bundle(self, tmp_path: Path):
         lib = Library(tmp_path / "lib")
         lib.init()
-        lib.write_record("rec001", _make_record())
+        lib.write_record("rec001", _make_record(new_filename="rec001.pdf"))
+        src = tmp_path / "paper.pdf"
+        src.write_text("dummy")
+        lib.store_file(src, "rec001", "rec001.pdf")
+        lib.text_path("rec001").write_text("# extracted")  # also a derived artifact
+
         lib.remove("rec001")
-        assert not (lib.refs_dir / "rec001.json").exists()
+        assert not lib.entry_dir("rec001").exists()  # record + file + markdown gone
 
     def test_remove_missing_record_raises(self, tmp_path: Path):
         lib = Library(tmp_path / "lib")
@@ -163,23 +165,25 @@ class TestRemove:
         with pytest.raises(FileNotFoundError):
             lib.remove("nonexistent")
 
-    def test_remove_with_delete_file_removes_stored_file(self, tmp_path: Path):
-        lib = Library(tmp_path / "lib")
-        lib.init()
-        record = _make_record(new_filename="paper.pdf")
-        lib.write_record("rec001", record)
-        # put a dummy file in files/
-        (lib.files_dir / "paper.pdf").write_text("dummy")
-        lib.remove("rec001", delete_file=True)
-        assert not (lib.refs_dir / "rec001.json").exists()
-        assert not (lib.files_dir / "paper.pdf").exists()
 
-    def test_remove_without_delete_file_leaves_file(self, tmp_path: Path):
+class TestExtractedText:
+    def test_clear_text_removes_markdown_and_artifacts_only(self, tmp_path: Path):
         lib = Library(tmp_path / "lib")
         lib.init()
-        record = _make_record(new_filename="paper.pdf")
-        lib.write_record("rec001", record)
-        (lib.files_dir / "paper.pdf").write_text("dummy")
-        lib.remove("rec001", delete_file=False)
-        assert not (lib.refs_dir / "rec001.json").exists()
-        assert (lib.files_dir / "paper.pdf").exists()
+        lib.write_record("rec001", _make_record())
+        lib.text_path("rec001").write_text("# md")
+        lib.artifacts_dir("rec001").mkdir()
+        (lib.artifacts_dir("rec001") / "img.png").write_bytes(b"x")
+
+        lib.clear_text("rec001")
+        assert not lib.text_path("rec001").exists()
+        assert not lib.artifacts_dir("rec001").exists()
+        # the record itself survives
+        assert lib.record_path("rec001").exists()
+
+    def test_read_text_missing_raises(self, tmp_path: Path):
+        lib = Library(tmp_path / "lib")
+        lib.init()
+        lib.write_record("rec001", _make_record())
+        with pytest.raises(FileNotFoundError):
+            lib.read_text("rec001")

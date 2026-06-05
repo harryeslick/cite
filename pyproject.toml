@@ -18,6 +18,9 @@ cite-mcp = "cite.mcp:main"
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
+# Optional, heavy: local full-markdown extraction (`cite extract`). Pulls torch +
+# the granite_docling VLM weights (downloaded/cached locally on first run).
+extract = ["docling>=2.0"]
 
 [dependency-groups]
 dev = [
@@ -35,3 +38,6 @@ packages = ["src/cite"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "slow: real docling pipeline (heavy; needs the 'extract' extra, downloads model on first run)",
+]

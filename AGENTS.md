@@ -29,5 +29,14 @@ prints one JSON object with a `status` field — read it and follow
 - `author` field format: `Family, Given; ...`; a comma-less entry is a literal
   (organisational) name. `issued`/`accessed`: `YYYY[-MM[-DD]]`.
 - Library path: `--library`, else `$CITE_LIBRARY`, else `./library`.
+- Each reference is a self-contained bundle dir `<id>/` (record + original file +
+  any extracted markdown). `cite remove <id>` deletes the whole bundle.
+
+## Optional: full-text markdown
+- `cite extract <id>` converts a stored reference to full markdown locally (Docling
+  VLM); output goes to `<id>/<id>.md` (+ `<id>_artifacts/`). Needs the `extract`
+  extra — on `status: error` with an install hint, tell the user to install
+  `cite[extract]`; never treat its absence as a failure of the core workflow.
+- `cite text <id> [--path-only]` prints the extracted markdown (or its path).
 
 See `README.md` for the full command reference.

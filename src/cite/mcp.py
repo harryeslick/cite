@@ -174,6 +174,38 @@ def export(format: str = "csl", library: str | None = None) -> str:
     return _run(["export", "--format", format, *_lib(library)])
 
 
+@mcp.tool()
+def extract(
+    id: str, vlm_model: str = "granite_docling", library: str | None = None
+) -> str:
+    """Extract full markdown for a stored reference via a local Docling VLM.
+
+    Optional feature: needs the `extract` extra on the cite install. Stores the
+    markdown + referenced images in the reference's bundle and records the
+    extractor/version in `_provenance.extraction`. Returns status 'error' with an
+    install hint if docling isn't available.
+    """
+    return _run(["extract", id, "--vlm-model", vlm_model, *_lib(library)])
+
+
+@mcp.tool()
+def text(id: str, path_only: bool = False, library: str | None = None) -> str:
+    """Return a reference's extracted markdown (or its path with path_only=True).
+
+    Returns a JSON 'not_found' envelope if the reference hasn't been extracted yet.
+    """
+    args = ["text", id, *_lib(library)]
+    if path_only:
+        args.append("--path-only")
+    return _run(args)
+
+
+@mcp.tool(name="migrate_layout")
+def migrate_layout(library: str | None = None) -> str:
+    """Migrate a legacy refs/+files/ library to per-entity bundles (idempotent)."""
+    return _run(["migrate-layout", *_lib(library)])
+
+
 def main() -> None:
     """Entry point for the `cite-mcp` console script (stdio transport)."""
     mcp.run()

@@ -8,13 +8,13 @@ records) and emits JSON so the agent spends minimal tokens.
 
 ## Design: the deterministic / agent split
 
-| Step | Owner |
-|------|-------|
-| Read a file to find its DOI / title / authors | agent (aided by `cite peek`) |
-| Search reference databases for the full citation | **tool** (`cite search`) |
-| Pick the correct candidate | agent |
-| Validate, hash, slugify filename, write record | **tool** (`cite add`) |
-| Fill missing fields for internal docs | agent ↔ user |
+| Step                                             | Owner                        |
+| ------------------------------------------------ | ---------------------------- |
+| Read a file to find its DOI / title / authors    | agent (aided by `cite peek`) |
+| Search reference databases for the full citation | **tool** (`cite search`)     |
+| Pick the correct candidate                       | agent                        |
+| Validate, hash, slugify filename, write record   | **tool** (`cite add`)        |
+| Fill missing fields for internal docs            | agent ↔ user                 |
 
 Records are stored as **CSL-JSON** (the Citation Style Language standard that
 Zotero exports and Pandoc consumes), with a custom `_provenance` block alongside
@@ -55,31 +55,40 @@ The library resolves from `--library <path>`, else `$CITE_LIBRARY`, else
 - **Per-project library** — pass `--library ./library`, or set a project-local
   `CITE_LIBRARY`, to scope citations to one project.
 
-Either way the library is laid out as:
+Either way the library is laid out as a directory of **per-entity bundles** —
+each reference is a self-contained directory named by its id:
 
-```
+```text
 library/
   cite.toml                 # config
-  refs/<id>.json            # one CSL-JSON record per reference
-  files/<id>.<ext>          # the renamed document files
+  <id>/<id>.json            # the CSL-JSON record for this reference
+  <id>/<id>.<ext>           # the renamed original document file
+  <id>/<id>.md              # (optional) extracted full markdown — see `cite extract`
+  <id>/<id>_artifacts/      # (optional) referenced images for the markdown
 ```
 
-Filenames follow `<year>-<author1>-<author2|etal|none>-<title>_<hash6>.<ext>`,
+The id (and file stem) follow `<year>-<author1>-<author2|etal|none>-<title>_<hash6>`,
 generated deterministically from the record. The `<hash6>` is a short prefix of
 the file's full SHA-256 (the full hash is stored in `_provenance` and used for
-deduplication — identical bytes can't be filed twice).
+deduplication — identical bytes can't be filed twice). Keeping everything for one
+reference in a single directory means it moves, syncs, and deletes atomically, and
+the markdown's relative image links resolve in place.
+
+> Upgrading a library created before the bundle layout (a `refs/` + `files/`
+> split)? Run `cite migrate-layout` once — it folds each reference into its bundle
+> directory and is idempotent.
 
 ## The 7 citation types → CSL
 
-| `cite_type` | CSL `type` | notes |
-|-------------|-----------|-------|
-| `journal-article` | `article-journal` | |
-| `book` | `book` | |
-| `book-section` | `chapter` | |
-| `web-site` | `webpage` | needs `URL` + `accessed` |
-| `trial-report` | `report` | `genre: "trial report"` |
-| `data-set` | `dataset` | |
-| `other-report` | `report` | |
+| `cite_type`       | CSL `type`        | notes                    |
+| ----------------- | ----------------- | ------------------------ |
+| `journal-article` | `article-journal` |                          |
+| `book`            | `book`            |                          |
+| `book-section`    | `chapter`         |                          |
+| `web-site`        | `webpage`         | needs `URL` + `accessed` |
+| `trial-report`    | `report`          | `genre: "trial report"`  |
+| `data-set`        | `dataset`         |                          |
+| `other-report`    | `report`          |                          |
 
 Run `cite guide --json` for the required fields of each type.
 
@@ -89,22 +98,26 @@ Every command prints a single JSON object/array with a `status` field. Commands
 exit `0` even for `missing_fields` / `duplicate` — those are normal workflow
 branches; inspect `status` rather than the exit code.
 
-| Command | Purpose |
-|---------|---------|
-| `cite peek <file>` | Deterministically extract embedded metadata + a DOI from a file. |
-| `cite search --doi <doi>` | Look up a DOI via CrossRef, then DataCite. |
-| `cite search --title "<t>" [--author <a>] [--year <y>]` | Fuzzy search via OpenAlex. |
-| `cite add <file> --doi <doi>` | Fetch by DOI, then validate/hash/rename/store. |
-| `cite add <file> --csl -` | Add from a CSL-JSON record on stdin (e.g. a chosen search candidate). |
-| `cite add <file> --manual --type <t> --field k=v ...` | Add a record built from fields. |
-| `cite validate --type <t> --csl -` | Report which required fields a record is missing. |
-| `cite list [--full]` | List references. |
-| `cite get <id>` | Print one record. |
-| `cite remove <id> [--delete-file]` | Remove a record (and optionally its file). |
-| `cite export --format csl\|bibtex\|pandoc` | Emit the library in a standard format. |
-| `cite guide [--json]` | Print the full agent-facing contract. |
+| Command                                                 | Purpose                                                               |
+| ------------------------------------------------------- | --------------------------------------------------------------------- |
+| `cite peek <file>`                                      | Deterministically extract embedded metadata + a DOI from a file.      |
+| `cite search --doi <doi>`                               | Look up a DOI via CrossRef, then DataCite.                            |
+| `cite search --title "<t>" [--author <a>] [--year <y>]` | Fuzzy search via OpenAlex.                                            |
+| `cite add <file> --doi <doi>`                           | Fetch by DOI, then validate/hash/rename/store.                        |
+| `cite add <file> --csl -`                               | Add from a CSL-JSON record on stdin (e.g. a chosen search candidate). |
+| `cite add <file> --manual --type <t> --field k=v ...`   | Add a record built from fields.                                       |
+| `cite validate --type <t> --csl -`                      | Report which required fields a record is missing.                     |
+| `cite list [--full]`                                    | List references.                                                      |
+| `cite get <id>`                                         | Print one record.                                                     |
+| `cite remove <id>`                                      | Remove a reference (deletes its whole bundle directory).              |
+| `cite extract <id>`                                     | Extract full markdown via a local Docling VLM (optional, see below).  |
+| `cite text <id> [--path-only]`                          | Print a reference's extracted markdown (or its path).                 |
+| `cite migrate-layout`                                   | Fold a legacy `refs/`+`files/` library into per-entity bundles.       |
+| `cite export --format csl\|bibtex\|pandoc`              | Emit the library in a standard format.                                |
+| `cite guide [--json]`                                   | Print the full agent-facing contract.                                 |
 
 ### `--field` syntax (manual add)
+
 - `author` / `editor`: `"Family, Given; Family2, Given2"` — a comma-less entry
   becomes an organisational (literal) name.
 - `issued` / `accessed` / `year`: `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`.
@@ -145,12 +158,11 @@ Ideas not yet implemented, in rough priority order:
   orphan files with no record), and report anything stale or broken. Intended to
   be run on a schedule.
 
-- **Full markdown extraction via a local model.** A function (e.g. `cite
-  extract`) that converts a source document to full markdown using a local tool
-  such as [Docling](https://github.com/docling-project/docling) (or similar),
-  stored alongside the reference. Enables full-text search / RAG over the library
-  while keeping processing local and private. Should stay optional so the core
-  tool has no heavy model dependency.
+- **Full-text search / RAG over the library** — a future *sibling* tool (not
+  `cite` itself) that indexes the extracted markdown by `cite:<id>` and resolves
+  display via `cite get`. Keeping the index (and its embedding/vector deps) in a
+  separate single-job tool is what lets `cite` stay the lean foundation. The
+  *extraction* half is now implemented (see "Local markdown extraction" below).
 
 - **Cross-file dedup of different copies** of the same work, and additional
   search backends (PubMed, Semantic Scholar) — the `search/` package is
@@ -174,6 +186,28 @@ Ideas not yet implemented, in rough priority order:
   the core library. Could be backed by metadata tags in the `_provenance` block
   or a simple topic-to-id mapping file.
 
+## Local markdown extraction (optional)
+
+`cite extract <id>` converts a stored reference's source document to full markdown
+using [Docling](https://github.com/docling-project/docling) with its local
+`granite_docling` VLM pipeline — **entirely on your machine**, nothing is sent to
+a remote service. Images are exported as referenced local files so figures render:
+
+```bash
+uv sync --extra extract            # dev: install docling (heavy: pulls torch + model)
+# or: uv tool install "cite[extract]"   # global install with the extractor
+
+uv run cite extract cite:2022-agency-annual-report_abc123
+uv run cite text   cite:2022-agency-annual-report_abc123   # print the markdown
+```
+
+The markdown and its images are written into the reference's bundle as
+`<id>/<id>.md` + `<id>/<id>_artifacts/`, and the extractor name + version are
+recorded under `_provenance.extraction` so a stale extraction is detectable. The
+feature is **optional**: the `extract`/`text` commands return a `status: error`
+with an install hint when the `extract` extra is absent, and the rest of `cite`
+works without it. Re-running `extract` overwrites prior output.
+
 ## For agents
 
 For **shell-capable agents** (Claude Code, Codex, …) the entry point in Claude
@@ -189,7 +223,7 @@ For clients that call typed tools instead of a shell (Claude Desktop, Cursor,
 shells out to `cite` and returns its JSON unchanged, so the CLI stays the single
 source of truth. The tools mirror the CLI's deterministic operations: `guide`,
 `peek`, `search`, `add_by_doi` / `add_from_csl` / `add_manual`, `validate`,
-`list`, `get`, `remove`, `export`.
+`list`, `get`, `remove`, `extract`, `text`, `migrate_layout`, `export`.
 
 Register it (set `CITE_LIBRARY` so the server knows which library to use):
 
