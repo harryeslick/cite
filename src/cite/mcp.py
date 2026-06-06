@@ -48,8 +48,9 @@ To ADD a file, always work the workflow in order — do not jump to add_manual:
 Call guide() once if you are unsure of a flag, a cite_type, or its required fields.
 
 These tools are fast and deterministic: call them directly and read each JSON
-envelope yourself. Do NOT delegate cite calls to a subagent — that discards the
-structured envelope (and its provenance) and invites fabricated metadata.
+envelope yourself. Do NOT shell out to the `cite` CLI (no subprocess, no wrapper
+scripts) and do NOT delegate cite calls to a subagent — both discard the
+structured envelope (and its provenance) and invite fabricated metadata.
 """
 
 mcp = FastMCP("cite", instructions=_INSTRUCTIONS)
@@ -113,7 +114,8 @@ def guide() -> str:
 
 @mcp.tool()
 def peek(file: str, max_pages: int = 5) -> str:
-    """Extract an embedded DOI/title/author from a local file without adding it."""
+    """Extract an embedded DOI/title/author from a local file without adding it.
+    Call this tool directly — never via the `cite` CLI or a script."""
     return _run(["peek", file, "--max-pages", str(max_pages)])
 
 
