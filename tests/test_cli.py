@@ -27,6 +27,23 @@ def _sample_file(tmp_path: Path) -> Path:
     return f
 
 
+def _other_file(tmp_path: Path, name: str = "rescan.pdf") -> Path:
+    """A file with *different bytes* — a second copy/version of the same work."""
+    f = tmp_path / name
+    f.write_text(f"different bytes for {name}")
+    return f
+
+
+def test_version_reports_package_version():
+    from cite import __version__
+
+    out = _run(["version"])
+    assert out["status"] == "ok"
+    assert out["tool"] == "cite"
+    assert out["version"] == __version__
+    assert isinstance(out["installed"], bool)
+
+
 def test_guide_json_lists_seven_types():
     result = runner.invoke(app, ["guide", "--json"])
     assert result.exit_code == 0
@@ -127,3 +144,92 @@ def test_id_is_namespaced_and_get_accepts_either_form(tmp_path):
 def test_guide_advertises_spec_version():
     data = json.loads(runner.invoke(app, ["guide", "--json"]).output)
     assert data["spec"] == "suite/1"
+
+
+# --------------------------------------------------------------------------- #
+# Near-duplicate gate (metadata-level, layered on the exact-hash gate)
+# --------------------------------------------------------------------------- #
+
+
+def _add_report(file: Path, lib: str, *, title, author, year, doi=None, force=False):
+    args = [
+        "add", str(file), "--manual", "--type", "other-report",
+        "--field", f"title={title}",
+        "--field", f"author={author}",
+        "--field", f"issued={year}",
+        "--library", lib,
+    ]
+    if doi:
+        args += ["--field", f"DOI={doi}"]
+    if force:
+        args.append("--force")
+    return _run(args)
+
+
+def test_near_duplicate_definitive_on_doi_then_force(tmp_path):
+    lib = str(tmp_path / "lib")
+    first = _add_report(
+        _sample_file(tmp_path), lib,
+        title="Soil Moisture Study", author="Smith, Jane", year=2023, doi="10.1/abc",
+    )
+    assert first["status"] == "added"
+
+    # A *different file* with the same DOI is the same registered work.
+    dup = _add_report(
+        _other_file(tmp_path), lib,
+        title="Soil Moisture Study (rescan)", author="Smith, Jane", year=2023,
+        doi="10.1/ABC",  # case/prefix-insensitive DOI match
+    )
+    assert dup["status"] == "near_duplicate"
+    assert dup["candidates"][0]["tier"] == "definitive"
+    assert dup["candidates"][0]["id"] == first["id"]
+    # Nothing committed — still one record.
+    assert _run(["list", "--library", lib])["count"] == 1
+
+    # The agent decides it's genuinely worth keeping and forces it through.
+    forced = _add_report(
+        _other_file(tmp_path), lib,
+        title="Soil Moisture Study (rescan)", author="Smith, Jane", year=2023,
+        doi="10.1/ABC", force=True,
+    )
+    assert forced["status"] == "added"
+    assert _run(["list", "--library", lib])["count"] == 2
+
+
+def test_near_duplicate_strong_on_title_author_year(tmp_path):
+    lib = str(tmp_path / "lib")
+    _add_report(
+        _sample_file(tmp_path), lib,
+        title="Annual Wheat Yield Report", author="Brown, Sam", year=2022,
+    )
+    dup = _add_report(
+        _other_file(tmp_path), lib,
+        title="Annual Wheat Yield Report", author="Brown, Sam", year=2022,
+    )
+    assert dup["status"] == "near_duplicate"
+    assert dup["candidates"][0]["tier"] == "strong"
+
+
+def test_exact_hash_gate_beats_near_duplicate_and_ignores_force(tmp_path):
+    lib = str(tmp_path / "lib")
+    f = _sample_file(tmp_path)
+    _add_report(f, lib, title="Identical Report", author="Lee, Kim", year=2021)
+
+    # Same bytes -> exact duplicate, even with --force (the bytes gate is absolute).
+    dup = _add_report(
+        f, lib, title="Identical Report", author="Lee, Kim", year=2021, force=True,
+    )
+    assert dup["status"] == "duplicate"
+
+
+def test_unrelated_metadata_adds_cleanly(tmp_path):
+    lib = str(tmp_path / "lib")
+    _add_report(
+        _sample_file(tmp_path), lib,
+        title="Quantum Computing Basics", author="Feynman, R", year=2001,
+    )
+    out = _add_report(
+        _other_file(tmp_path), lib,
+        title="Medieval Crop Rotation", author="Smith, A", year=1995,
+    )
+    assert out["status"] == "added"

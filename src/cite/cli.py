@@ -19,11 +19,13 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
 import typer
 
+from cite import __version__
 from cite.guide import guide as build_guide
 from cite.models import (
     PROVENANCE_KEY,
@@ -35,6 +37,7 @@ from cite.models import (
     genre_for,
     issued_year,
 )
+from cite.dedup import find_near_duplicates
 from cite.naming import (
     build_filename,
     content_hash,
@@ -157,6 +160,24 @@ def _load_csl(source: str) -> dict:
 
 
 @app.command()
+def version() -> None:
+    """Report the cite version — a quick way to verify the install.
+
+    Reads the *installed* distribution metadata (``importlib.metadata``) when
+    available; that is what proves the package is actually installed on PATH and
+    not merely importable from a source checkout. Falls back to the in-package
+    ``__version__`` (and ``installed: false``) when no distribution is found.
+    """
+    try:
+        ver = importlib_metadata.version("cite")
+        installed = True
+    except importlib_metadata.PackageNotFoundError:
+        ver = __version__
+        installed = False
+    _emit({"status": "ok", "tool": "cite", "version": ver, "installed": installed})
+
+
+@app.command()
 def peek(
     file: Path = typer.Argument(..., exists=True, readable=True),
     max_pages: int = typer.Option(5, help="Pages to scan for a DOI."),
@@ -191,6 +212,13 @@ def add(
     ),
     field: list[str] = typer.Option(
         [], "--field", help="key=value for --manual (repeatable)."
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "--allow-near-duplicate",
+        help="Commit even if a near-duplicate (same DOI / title+author+year) exists. "
+        "Does NOT override the identical-bytes gate.",
     ),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
@@ -253,6 +281,25 @@ def add(
             "existing": prov,
         })
         return
+
+    # 3b. Near-duplicate gate: catch the *same work* under different bytes (same DOI,
+    # or close title/author/year). Skipped with --force. Commits nothing on a hit —
+    # the agent decides (definitive/strong) or asks the user (possible), then re-adds
+    # with --force. The exact-hash gate above is absolute and --force does not skip it.
+    if not force:
+        candidates = find_near_duplicates(record, lib.list_records())
+        if candidates:
+            top = candidates[0].tier
+            _emit({
+                "status": "near_duplicate",
+                "message": (
+                    f"{len(candidates)} possible match(es) — review before adding "
+                    f"(strongest tier: {top})"
+                ),
+                "candidates": [c.to_dict() for c in candidates],
+                "resolution": "if genuinely new, re-run `cite add ... --force`",
+            })
+            return
 
     # 4. Deterministic rename + provenance.
     ext = file.suffix.lstrip(".")
@@ -455,15 +502,6 @@ def text(
         })
         return
     typer.echo(str(lib.text_path(stem)) if path_only else lib.read_text(stem))
-
-
-@app.command(name="migrate-layout")
-def migrate_layout(
-    library: Path | None = typer.Option(None, help="Library root."),
-) -> None:
-    """Migrate a legacy refs/ + files/ library to per-entity bundles (idempotent)."""
-    lib = _resolve_library(library)
-    _emit({"status": "ok", **lib.migrate_layout()})
 
 
 @app.command()

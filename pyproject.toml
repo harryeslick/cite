@@ -1,6 +1,6 @@
 [project]
 name = "cite"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A deterministic citation/reference manager for agent use"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,7 +20,15 @@ cite-mcp = "cite.mcp:main"
 mcp = ["mcp>=1.2"]
 # Optional, heavy: local full-markdown extraction (`cite extract`). Pulls torch +
 # the granite_docling VLM weights (downloaded/cached locally on first run).
-extract = ["docling>=2.0"]
+# On Apple Silicon, mlx-vlm enables docling's MLX engine (granite-docling-258M-mlx);
+# without it docling falls back to the much slower Transformers path.
+extract = [
+    "docling>=2.0",
+    "mlx-vlm; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+# Convenience: install every optional feature in one shot.
+#   uv sync --extra all   (or: uv sync --all-extras / pip install 'cite[all]')
+all = ["cite[mcp,extract]"]
 
 [dependency-groups]
 dev = [
@@ -31,6 +39,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/cite/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cite"]

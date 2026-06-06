@@ -74,10 +74,6 @@ deduplication — identical bytes can't be filed twice). Keeping everything for 
 reference in a single directory means it moves, syncs, and deletes atomically, and
 the markdown's relative image links resolve in place.
 
-> Upgrading a library created before the bundle layout (a `refs/` + `files/`
-> split)? Run `cite migrate-layout` once — it folds each reference into its bundle
-> directory and is idempotent.
-
 ## The 7 citation types → CSL
 
 | `cite_type`       | CSL `type`        | notes                    |
@@ -112,7 +108,6 @@ branches; inspect `status` rather than the exit code.
 | `cite remove <id>`                                      | Remove a reference (deletes its whole bundle directory).              |
 | `cite extract <id>`                                     | Extract full markdown via a local Docling VLM (optional, see below).  |
 | `cite text <id> [--path-only]`                          | Print a reference's extracted markdown (or its path).                 |
-| `cite migrate-layout`                                   | Fold a legacy `refs/`+`files/` library into per-entity bundles.       |
 | `cite export --format csl\|bibtex\|pandoc`              | Emit the library in a standard format.                                |
 | `cite guide [--json]`                                   | Print the full agent-facing contract.                                 |
 
@@ -223,7 +218,7 @@ For clients that call typed tools instead of a shell (Claude Desktop, Cursor,
 shells out to `cite` and returns its JSON unchanged, so the CLI stays the single
 source of truth. The tools mirror the CLI's deterministic operations: `guide`,
 `peek`, `search`, `add_by_doi` / `add_from_csl` / `add_manual`, `validate`,
-`list`, `get`, `remove`, `extract`, `text`, `migrate_layout`, `export`.
+`list`, `get`, `remove`, `extract`, `text`, `export`.
 
 Register it (set `CITE_LIBRARY` so the server knows which library to use):
 

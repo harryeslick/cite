@@ -54,6 +54,10 @@ def _lib(library: str | None) -> list[str]:
     return ["--library", library] if library else []
 
 
+def _force(force: bool) -> list[str]:
+    return ["--force"] if force else []
+
+
 # --------------------------------------------------------------------------- #
 # Read / lookup tools
 # --------------------------------------------------------------------------- #
@@ -101,36 +105,52 @@ def search(
 
 
 @mcp.tool()
-def add_by_doi(file: str, doi: str, library: str | None = None) -> str:
+def add_by_doi(
+    file: str, doi: str, force: bool = False, library: str | None = None
+) -> str:
     """Fetch a citation by DOI (Crossref/DataCite), then validate/hash/rename/store.
 
     Returns status 'not_found' if no DB match — fall back to add_manual.
+    Returns status 'near_duplicate' if a same-work record is already filed; see
+    `add_from_csl` for how to handle it.
     """
-    return _run(["add", file, "--doi", doi, *_lib(library)])
+    return _run(["add", file, "--doi", doi, *_force(force), *_lib(library)])
 
 
 @mcp.tool()
-def add_from_csl(file: str, csl: str, library: str | None = None) -> str:
+def add_from_csl(
+    file: str, csl: str, force: bool = False, library: str | None = None
+) -> str:
     """Add a file using a CSL-JSON record you chose — typically one candidate
     object from a `search` result. The record is piped to `cite add --csl -`.
 
     Returns status 'duplicate' if identical file bytes are already filed.
+    Returns status 'near_duplicate' (with tiered `candidates`) if a *same work* is
+    already filed under different bytes — e.g. a preprint vs published version. A
+    `definitive`/`strong` candidate you may resolve yourself; a `possible` candidate
+    is ambiguous, so confirm with the USER. To commit anyway, re-call with force=True
+    (this overrides only the near-duplicate gate, never the identical-bytes gate).
     """
-    return _run(["add", file, "--csl", "-", *_lib(library)], stdin=csl)
+    return _run(["add", file, "--csl", "-", *_force(force), *_lib(library)], stdin=csl)
 
 
 @mcp.tool()
 def add_manual(
-    file: str, type: str, fields: dict[str, str], library: str | None = None
+    file: str,
+    type: str,
+    fields: dict[str, str],
+    force: bool = False,
+    library: str | None = None,
 ) -> str:
     """Add a file with no DB match by building the record from fields.
 
     `type` is one of the 7 cite_types; `fields` expands to repeated --field k=v
     (author = 'Family, Given; ...'; issued/accessed = 'YYYY[-MM[-DD]]').
     On status 'missing_fields', ask the USER for the listed fields and re-call —
-    never fabricate bibliographic facts.
+    never fabricate bibliographic facts. On status 'near_duplicate', see
+    `add_from_csl`; re-call with force=True to commit anyway.
     """
-    args = ["add", file, "--manual", "--type", type, *_lib(library)]
+    args = ["add", file, "--manual", "--type", type, *_force(force), *_lib(library)]
     for key, value in fields.items():
         args += ["--field", f"{key}={value}"]
     return _run(args)
@@ -184,6 +204,12 @@ def extract(
     markdown + referenced images in the reference's bundle and records the
     extractor/version in `_provenance.extraction`. Returns status 'error' with an
     install hint if docling isn't available.
+
+    Long-running: a vision model runs over the whole document and can take
+    minutes. This MCP call blocks until it finishes and cannot be backgrounded
+    over MCP, so finish all other cite work first and call this last. For
+    fire-and-forget, run the `cite extract <id>` CLI as a background process
+    instead and poll `cite text <id> --path-only` for completion.
     """
     return _run(["extract", id, "--vlm-model", vlm_model, *_lib(library)])
 
@@ -198,12 +224,6 @@ def text(id: str, path_only: bool = False, library: str | None = None) -> str:
     if path_only:
         args.append("--path-only")
     return _run(args)
-
-
-@mcp.tool(name="migrate_layout")
-def migrate_layout(library: str | None = None) -> str:
-    """Migrate a legacy refs/+files/ library to per-entity bundles (idempotent)."""
-    return _run(["migrate-layout", *_lib(library)])
 
 
 def main() -> None:

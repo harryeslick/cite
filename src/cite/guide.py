@@ -13,14 +13,13 @@ from cite.models import CITE_TYPES, REQUIRED_FIELDS, SPEC_VERSION, TYPE_MAP
 _COMMANDS = [
     {"name": "peek", "summary": "Extract DOI/title/metadata from a local file without adding it."},
     {"name": "search", "summary": "Search for a reference by --doi or --title across Crossref/DataCite/OpenAlex."},
-    {"name": "add", "summary": "Add a file to the library with CSL metadata (from --csl or --manual fields)."},
+    {"name": "add", "summary": "Add a file to the library with CSL metadata (from --csl or --manual fields). Gated against identical-byte and same-work duplicates; --force commits past a near_duplicate."},
     {"name": "validate", "summary": "Check that a record has all required fields for its cite_type."},
     {"name": "list", "summary": "List all records in the library (brief summary view)."},
     {"name": "get", "summary": "Retrieve the full CSL-JSON record for a given record id."},
     {"name": "remove", "summary": "Remove a record from the library (deletes the whole reference bundle)."},
-    {"name": "extract", "summary": "Extract full markdown for a reference via a local Docling VLM (optional 'extract' extra)."},
+    {"name": "extract", "summary": "Extract full markdown for a reference via a local Docling VLM (optional 'extract' extra). Slow/blocking — run in the background and poll `cite text` when your runtime allows."},
     {"name": "text", "summary": "Print a reference's extracted markdown, or its path with --path-only."},
-    {"name": "migrate-layout", "summary": "Migrate a legacy refs/+files/ library to per-entity bundles (idempotent)."},
     {"name": "export", "summary": "Export library records as CSL-JSON or another format."},
     {"name": "guide", "summary": "Print this agent usage contract (add --json for machine-readable form)."},
 ]
@@ -35,6 +34,11 @@ _WORKFLOW = [
     "Pick the best match and run `cite add <file> --csl -` (pipe CSL-JSON on stdin) to add it.",
     "If no database match is found, gather required fields (run `cite validate` to see what's missing) "
     "and run `cite add <file> --manual --type <type> --field key=value ...` to add manually.",
+    "If `add` returns `near_duplicate`, the same work may already be filed. Inspect each "
+    "`candidates[].tier`: a `definitive` (same DOI) or `strong` (same title+author+year) "
+    "match you may resolve yourself (skip it, or keep both with `--force` for e.g. a "
+    "preprint vs published version); a `possible` (fuzzy title) match is ambiguous — show "
+    "the candidate(s) to the USER and confirm before re-running `cite add ... --force`.",
     "The tool returns the final CSL-JSON record and the new canonical filename assigned to the stored file.",
 ]
 
@@ -46,8 +50,13 @@ _NOTES = (
     "Records are stored as CSL-JSON dicts. Provenance metadata (original filename, "
     "new filename, date added, file hash, source) is stored under the `_provenance` key "
     "inside each record; CSL processors ignore underscore-prefixed keys. "
-    "Deduplication is performed by content hash (SHA-256), so adding the same file twice "
-    "is a no-op. Citation types are limited to the 7 listed in 'types'. "
+    "Deduplication has two gates. (1) Exact: an identical-bytes file (same SHA-256) is a "
+    "no-op (`status: duplicate`); this gate is absolute and `--force` never overrides it. "
+    "(2) Near-duplicate: before committing, the incoming record's metadata is compared to "
+    "the library to catch the *same work* under different bytes, returning `status: "
+    "near_duplicate` with tiered `candidates` (definitive = same DOI; strong = same "
+    "title+author+year; possible = fuzzy title — ask the user). Pass `--force` to commit "
+    "past the near-duplicate gate. Citation types are limited to the 7 listed in 'types'. "
     "Record ids are emitted in namespaced form `cite:<stem>` (the cross-tool foreign-key "
     "form); get/remove accept either the namespaced id or the bare stem. Every response "
     "envelope carries a `spec` field naming the protocol version (see 'spec'). "
@@ -55,7 +64,11 @@ _NOTES = (
     "(`<id>.json`), the original file (`<id>.<ext>`), and any extracted markdown "
     "(`<id>.md` + `<id>_artifacts/`). Full-markdown extraction (`cite extract`) is an "
     "optional, fully-local feature requiring the `extract` extra (Docling); the rest of "
-    "cite works without it."
+    "cite works without it. Extraction runs a vision model over the whole document and can "
+    "take minutes, blocking until it finishes; if your runtime can run shell commands in the "
+    "background, launch `cite extract <id>` detached and keep doing other work, then poll "
+    "`cite text <id> --path-only` (path appears only once extraction completes) instead of "
+    "waiting on it inline."
 )
 
 # --------------------------------------------------------------------------- #
