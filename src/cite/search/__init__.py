@@ -2,8 +2,25 @@
 
 from __future__ import annotations
 
+import re
+
 from cite.models import cite_type_from_csl
 from cite.search import crossref, datacite, openalex
+
+# Title-relevance gate for the OpenAlex (title) path. OpenAlex always returns its
+# top-N by text relevance, so an unmatched query (e.g. grey literature with no DB
+# record) still comes back full of unrelated papers. We drop any candidate whose
+# title shares fewer than this fraction of the query's content words — a
+# deterministic filter that keeps real matches and discards the noise, instead of
+# forcing the agent to read and reject every hit.
+_TITLE_OVERLAP_MIN = 0.34
+# Cap on how many candidates we return for the agent to choose between.
+_MAX_CANDIDATES = 3
+# Words ignored when comparing titles (too common to carry signal).
+_STOPWORDS = frozenset(
+    "the a an of and or for on to in by with from at as is are be this that "
+    "using use update report guide".split()
+)
 
 
 def search(
@@ -46,24 +63,46 @@ def search(
                 candidates.append(record)
 
     elif title is not None:
-        # Title path: OpenAlex
+        # Title path: OpenAlex. Filter out low-relevance noise so the agent isn't
+        # forced to read and reject unrelated papers (see _TITLE_OVERLAP_MIN).
         results = openalex.search(title, author=author, year=year)
-        for r in results:
+        relevant = [r for r in results if _title_overlap(title, r) >= _TITLE_OVERLAP_MIN]
+        for r in relevant:
             oa_id = r.pop("openalex_id", "") or ""
             source_id = r.get("DOI") or oa_id or None
             _annotate(r, source="openalex", source_id=source_id)
-        candidates = results
+        # Return compact pick-list summaries, not full CSL: the agent only needs
+        # enough to choose. It then files the choice by source_id via add_by_doi,
+        # which re-fetches the complete, authoritative record (so trimming the
+        # author list here never truncates the stored bibliography).
+        candidates = [_summarize(r) for r in relevant[:_MAX_CANDIDATES]]
+        # Distinguish "DB had nothing" from "DB had only unrelated hits" — the
+        # latter still means go-manual, but signals the search wasn't wasted.
+        if not candidates and results:
+            return {
+                "status": "weak_match",
+                "query": query,
+                "candidates": [],
+                "note": (
+                    f"OpenAlex returned {len(results)} result(s) but none matched "
+                    "the title closely; this is likely grey literature or an "
+                    "untitled/non-indexed work."
+                ),
+                "suggested_next": _MANUAL_HINT,
+            }
 
     status = "ok" if candidates else "empty"
 
-    if candidates:
-        suggested_next = (
-            "cite add <file> --csl - (pipe the chosen candidate)"
-        )
+    if not candidates:
+        suggested_next = _MANUAL_HINT
+    elif doi is not None:
+        # DOI path returns one exact, full CSL record — file it directly.
+        suggested_next = "cite add <file> --csl - (pipe the chosen candidate)"
     else:
+        # Title path returns summaries — file the chosen one by its DOI.
         suggested_next = (
-            "no match found; gather fields and use: "
-            "cite add <file> --manual --type <type> --field key=val ..."
+            "file the chosen candidate by its DOI: cite add <file> --doi "
+            "<source_id>. If a candidate has no DOI, fall back to --manual."
         )
 
     return {
@@ -72,6 +111,72 @@ def search(
         "candidates": candidates,
         "suggested_next": suggested_next,
     }
+
+
+_MANUAL_HINT = (
+    "no match found; gather fields and use: "
+    "cite add <file> --manual --type <type> --field key=val ..."
+)
+
+
+def _tokens(text: str) -> set[str]:
+    """Lowercase content words (len >= 3) of a title, minus stopwords."""
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return {w for w in words if len(w) >= 3 and w not in _STOPWORDS}
+
+
+def _title_overlap(query_title: str, candidate: dict) -> float:
+    """Fraction of the query's content words present in the candidate title.
+
+    1.0 means every query word appears in the candidate; 0.0 means none do.
+    Containment (over the query, not a symmetric Jaccard) so a long candidate
+    title that contains the short query still scores high.
+    """
+    q = _tokens(query_title)
+    if not q:
+        return 1.0  # nothing to discriminate on — don't filter
+    c = _tokens(candidate.get("title", ""))
+    return len(q & c) / len(q)
+
+
+def _summarize(record: dict) -> dict:
+    """Compact a full CSL candidate to a pick-list entry.
+
+    Uses deliberately non-CSL keys (``authors`` string, ``year`` int) so the
+    summary can't be mistaken for a complete record and piped into add_from_csl;
+    the agent files it by ``source_id`` instead.
+    """
+    summary: dict = {"title": record.get("title")}
+    authors = _author_display(record.get("author") or [])
+    if authors:
+        summary["authors"] = authors
+    year = _issued_year(record)
+    if year is not None:
+        summary["year"] = year
+    for key in ("container-title", "DOI", "source", "source_id", "_cite_type"):
+        value = record.get(key)
+        if value:
+            summary[key] = value
+    return summary
+
+
+def _author_display(authors: list[dict]) -> str | None:
+    """First author + 'et al. (N)' for N>1 — a one-line author summary."""
+    if not authors:
+        return None
+    first = authors[0]
+    family = first.get("family") or first.get("literal") or ""
+    given = first.get("given")
+    label = f"{family}, {given}" if (family and given) else family
+    n = len(authors)
+    return f"{label} et al. ({n})" if n > 1 else label
+
+
+def _issued_year(record: dict) -> int | None:
+    parts = (record.get("issued") or {}).get("date-parts") or []
+    if parts and parts[0]:
+        return parts[0][0]
+    return None
 
 
 def _annotate(record: dict, source: str, source_id: str | None) -> None:

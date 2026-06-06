@@ -63,6 +63,20 @@ def test_add_manual_missing_fields_returns_hint(tmp_path):
     assert "--manual" in out["hint"]
 
 
+def test_add_manual_unknown_type_returns_clean_error(tmp_path):
+    """An invalid cite_type yields a one-line JSON error, not a Rich traceback."""
+    f = _sample_file(tmp_path)
+    out = _run([
+        "add", str(f), "--manual", "--type", "report",  # not in the vocabulary
+        "--field", "title=Foo",
+        "--library", str(tmp_path / "lib"),
+    ])
+    assert out["status"] == "error"
+    assert "Unknown cite_type 'report'" in out["message"]
+    # The whole envelope is tiny — no traceback frames or locals dump.
+    assert len(json.dumps(out)) < 400
+
+
 def test_add_manual_complete_then_duplicate_then_list(tmp_path):
     f = _sample_file(tmp_path)
     lib = str(tmp_path / "lib")

@@ -54,6 +54,10 @@ app = typer.Typer(
     add_completion=False,
     help="A deterministic citation/reference manager for agent use.",
     no_args_is_help=True,
+    # Keep Rich's pretty tracebacks ON: a human debugging `cite` at a terminal
+    # wants the boxed frames + locals. The MCP wrapper, which can't afford that
+    # in a model's context, sets TYPER_STANDARD_TRACEBACK=1 per-invocation so the
+    # *same* binary emits a plain one-line traceback there (see cite/mcp.py).
 )
 
 # Helper keys the search layer attaches to candidates; we don't persist them.
@@ -254,7 +258,14 @@ def add(
     elif manual:
         if not type_:
             raise typer.BadParameter("--manual requires --type")
-        record = _record_from_fields(type_, field)
+        try:
+            record = _record_from_fields(type_, field)
+        except ValueError as exc:
+            # An unknown cite_type (or other field-construction problem) is agent
+            # error, not a bug — return the one-line reason as a structured
+            # envelope rather than letting it escape as a traceback.
+            _emit({"status": "error", "message": str(exc)})
+            return
         cite_type = type_
     else:
         raise typer.BadParameter("provide one of --doi, --csl, or --manual")
@@ -266,6 +277,14 @@ def add(
     # 2. Validate required fields for the type (don't commit if incomplete).
     verdict = run_validate(cite_type, record)
     if verdict["status"] != "ok":
+        # On a manual add we still hold the source file, and its embedded metadata
+        # often supplies exactly the fields that are missing. Point back at peek so
+        # the agent recovers them before asking the user (and never fabricates).
+        if manual and verdict["status"] == "missing_fields":
+            verdict["suggested_next"] = (
+                f"recover the missing fields from the document before asking the "
+                f"user: cite peek {file}"
+            )
         _emit(verdict)
         return
 

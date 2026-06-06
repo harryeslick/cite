@@ -63,3 +63,19 @@ def test_add_manual_then_list_then_remove(tmp_path):
 def test_unknown_record_is_not_found(tmp_path):
     out = json.loads(cite_mcp.get("does-not-exist", library=str(tmp_path / "lib")))
     assert out["status"] == "not_found"
+
+
+def test_uncaught_cli_error_collapses_to_one_clean_line():
+    """An uncaught CLI exception comes back as a single-line message, not a
+    multi-KB Rich traceback. The CLI itself keeps pretty tracebacks for humans;
+    the MCP forces TYPER_STANDARD_TRACEBACK so _last_line lifts the full message.
+    """
+    out = json.loads(cite_mcp.validate("book", "not valid json"))
+    assert out["status"] == "error"
+    # The real exception message survives intact...
+    assert "JSONDecodeError" in out["message"]
+    # ...with none of the traceback noise (box-art, frames, locals).
+    assert "─" not in out["message"]  # Rich box-drawing char
+    assert "Traceback" not in out["message"]
+    assert "\n" not in out["message"]
+    assert len(out["message"]) < 500

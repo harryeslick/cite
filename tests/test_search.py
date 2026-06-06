@@ -325,3 +325,54 @@ def test_orchestrator_empty_title_search():
     assert result["status"] == "empty"
     assert result["candidates"] == []
     assert "no match found" in result["suggested_next"]
+
+
+@respx.mock
+def test_orchestrator_title_candidates_are_compact_summaries():
+    """A relevant title hit is returned as a pick-list summary, not full CSL."""
+    respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, json=OPENALEX_PAYLOAD)
+    )
+    result = search(title="Reactive Oxygen Species in Cells")
+
+    assert result["status"] == "ok"
+    c = result["candidates"][0]
+    # Compact, non-CSL shape: author array collapsed to a display string, issued
+    # collapsed to a plain year. (Filing re-fetches the full record by DOI.)
+    assert c["authors"] == "Wonderland, Alice et al. (2)"
+    assert c["year"] == 2020
+    assert "author" not in c  # full CSL author array dropped
+    assert "issued" not in c
+    # Still carries everything needed to file by DOI.
+    assert c["source_id"] == "10.9999/ros2020"
+    assert c["_cite_type"] == "journal-article"
+    assert "--doi" in result["suggested_next"]
+
+
+@respx.mock
+def test_orchestrator_title_filters_irrelevant_hits_as_weak_match():
+    """OpenAlex hits that don't match the query title are suppressed, not dumped."""
+    junk = {
+        "results": [
+            {
+                "id": "https://openalex.org/W1",
+                "display_name": (
+                    "Recommendations for Cardiac Chamber Quantification by "
+                    "Echocardiography in Adults"
+                ),
+                "publication_year": 2015,
+                "doi": "https://doi.org/10.1016/j.echo.2014.10.003",
+                "type": "article",
+                "authorships": [{"author": {"display_name": "Roberto Lang"}}],
+            }
+        ]
+    }
+    respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, json=junk)
+    )
+    result = search(title="Pulse Variety Disease Guide 2026")
+
+    assert result["status"] == "weak_match"
+    assert result["candidates"] == []
+    assert "none matched" in result["note"]
+    assert "--manual" in result["suggested_next"]
