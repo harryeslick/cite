@@ -34,16 +34,28 @@ tools do the reproducible bookkeeping. Every tool returns one JSON object with a
 `status` field — read it and follow any `hint` / `suggested_next`.
 
 To ADD a file, always work the workflow in order — do not jump to add_manual:
-  1. peek(file)   — recover an embedded DOI / title / author from the document.
-  2. search(...)  — by the DOI peek found, else by title (+ author / year).
+  1. Identify the document:
+       • prepare(file) — PREFERRED when the `extract` extra is installed. Extracts
+         the full markdown once (cached by content hash) and returns its `head`
+         plus any `doi`/`title_guess` read from the text — the best context for
+         reports with no DOI / thin metadata. If it returns `extractor_unavailable`,
+         fall back to peek.
+       • peek(file)    — cheap, always available: recovers an embedded DOI / title
+         / author. Use when prepare is unavailable, or the file clearly carries a
+         printed DOI (peek + search is then faster than a full extraction).
+  2. search(...)  — by the DOI found, else by title (+ author / year).
   3. File the chosen candidate:
        • a DOI search returns one full record   → add_from_csl(file, csl=<it>).
        • a title search returns compact summaries → pick one and file it by its
          `source_id`: add_by_doi(file, doi=<source_id>) (re-fetches the complete
          record). If a summary has no DOI, use add_manual.
   4. Only if search returns `empty`/`weak_match`: add_manual(file, type, fields).
-     This is the last resort. On `missing_fields`, re-check peek output before
-     asking the USER, and never fabricate bibliographic facts.
+     This is the last resort. On `missing_fields`, re-check the prepare `head` /
+     peek output before asking the USER, and never fabricate bibliographic facts.
+
+  A file prepared in step 1 has its extraction adopted automatically by any add in
+  step 3/4 (same bytes) — the add result reports `extracted: true`, and the slow
+  VLM pass is never repeated.
 
 Call guide() once if you are unsure of a flag, a cite_type, or its required fields.
 
@@ -117,6 +129,38 @@ def peek(file: str, max_pages: int = 5) -> str:
     """Extract an embedded DOI/title/author from a local file without adding it.
     Call this tool directly — never via the `cite` CLI or a script."""
     return _run(["peek", file, "--max-pages", str(max_pages)])
+
+
+@mcp.tool()
+def prepare(
+    file: str,
+    head_chars: int = 2000,
+    vlm_model: str = "granite_docling",
+    library: str | None = None,
+) -> str:
+    """Extract a file's full markdown BEFORE adding it, for better citation context.
+
+    Prefer this over `peek` as the first step WHEN the `extract` extra is installed
+    — especially for reports with no DOI and thin embedded metadata, where the
+    document text is the best source of title/author/publisher/date. It runs the
+    local Docling VLM once, caches the markdown by content hash, and returns
+    `status: staged` with the markdown `head`, any `doi`/`title_guess` read from
+    the text, and a `markdown_path` you can read in full. Then `search` (better
+    informed) or `add_manual`; the later add adopts the cached extraction, so the
+    slow VLM pass never repeats (the add result reports `extracted: true`).
+
+    Degrades cleanly: returns `status: extractor_unavailable` (with a `cite peek`
+    fallback in `suggested_next`) if the extra isn't installed, and `status:
+    duplicate` if the bytes are already filed.
+
+    Long-running: a vision model runs over the whole document and can take minutes;
+    this MCP call blocks until it finishes. If the file is clearly in a database
+    (a DOI is printed on it), `peek` + `search` may be faster.
+    """
+    return _run([
+        "prepare", file, "--head-chars", str(head_chars),
+        "--vlm-model", vlm_model, *_lib(library),
+    ])
 
 
 @mcp.tool()
@@ -206,6 +250,26 @@ def add_manual(
     for key, value in fields.items():
         args += ["--field", f"{key}={value}"]
     return _run(args)
+
+
+@mcp.tool()
+def add_url(url: str, force: bool = False, library: str | None = None) -> str:
+    """Add a citation from a URL — for a website you have only the link to.
+
+    Fetches the page and branches on its type. An HTML page is snapshotted (the
+    archived document) and its metadata (Open Graph / title / JSON-LD) parsed into
+    a `web-site` record with today's `accessed` date. A PDF is downloaded and
+    `peek`ed instead, returning status 'downloaded' with the saved `path` — then
+    continue the normal document flow (`search` -> `add_by_doi`/`add_from_csl`),
+    exactly as for a local PDF.
+
+    On status 'missing_fields' (e.g. the page had no readable title), ask the USER
+    for the field and re-add — never fabricate it. On status 'near_duplicate' the
+    same URL is already filed; re-call with force=True to add anyway. Use this only
+    when you have a bare URL: for a paper with a DOI, peek/search + add_by_doi gives
+    richer metadata.
+    """
+    return _run(["add-url", url, *_force(force), *_lib(library)])
 
 
 @mcp.tool()

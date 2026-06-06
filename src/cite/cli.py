@@ -15,15 +15,20 @@ Design notes for agents reading this:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import sys
+import tempfile
 from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
+from importlib import util as importlib_util
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import typer
+from slugify import slugify
 
 from cite import __version__
 from cite.guide import guide as build_guide
@@ -37,7 +42,7 @@ from cite.models import (
     genre_for,
     issued_year,
 )
-from cite.dedup import find_near_duplicates
+from cite.dedup import find_near_duplicates, find_url_duplicate
 from cite.naming import (
     build_filename,
     content_hash,
@@ -49,6 +54,7 @@ from cite.search import search as run_search
 from cite.store import Library
 from cite.validate import validate as run_validate
 from cite import peek as peek_mod
+from cite import web
 
 app = typer.Typer(
     add_completion=False,
@@ -91,6 +97,12 @@ def _resolve_library(library: Path | None) -> Library:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _today_date_parts() -> dict:
+    """Today's date as a CSL date object — the `accessed` value for a web add."""
+    now = datetime.now(timezone.utc)
+    return {"date-parts": [[now.year, now.month, now.day]]}
 
 
 # --------------------------------------------------------------------------- #
@@ -159,8 +171,136 @@ def _load_csl(source: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Shared commit pipeline (used by both `add` and `add-url`)
+# --------------------------------------------------------------------------- #
+
+
+def _commit_file(
+    lib: Library,
+    file: Path,
+    record: dict,
+    cite_type: str,
+    *,
+    source: str,
+    source_id: str | None,
+    force: bool,
+    manual: bool = False,
+    dup_finder: Callable[[dict, list[dict]], list] = find_near_duplicates,
+) -> dict:
+    """Validate, dedup, hash, rename, and store a record + its file. Return an envelope.
+
+    The file-agnostic back half of the add pipeline, shared so `add` (local file)
+    and `add-url` (fetched snapshot) commit identically. Returns the response dict
+    (the caller emits it); commits nothing when validation or a dedup gate stops it.
+
+    `dup_finder` selects the near-duplicate gate: the default DOI/title/author/year
+    matcher for documents, or `find_url_duplicate` (exact-URL only) for the web path.
+    Both return the same `Match` shape, so the `near_duplicate` envelope is uniform.
+    """
+    # Strip search-helper keys so the persisted record is clean CSL.
+    for key in _HELPER_KEYS:
+        record.pop(key, None)
+
+    # 1. Validate required fields for the type (don't commit if incomplete).
+    verdict = run_validate(cite_type, record)
+    if verdict["status"] != "ok":
+        # On a manual add we still hold the source file, and its embedded metadata
+        # often supplies exactly the fields that are missing. Point back at peek so
+        # the agent recovers them before asking the user (and never fabricates).
+        if manual and verdict["status"] == "missing_fields":
+            verdict["suggested_next"] = (
+                f"recover the missing fields from the document before asking the "
+                f"user: cite peek {file}"
+            )
+        return verdict
+
+    # 2. Content hash + exact-bytes dedup gate (absolute; --force never skips it).
+    full_hash = content_hash(file)
+    existing = lib.find_by_hash(full_hash)
+    if existing:
+        prov = existing.get(PROVENANCE_KEY, {})
+        return {
+            "status": "duplicate",
+            "message": "identical file already in library",
+            "id": namespaced_id(prov.get("new_filename", "").rsplit(".", 1)[0]),
+            "existing": prov,
+        }
+
+    # 3. Near-duplicate gate: catch the *same work* under different bytes (same DOI/
+    # title/author/year for documents, or same URL for the web path). Skipped with
+    # --force. Commits nothing on a hit — the agent decides or asks the user, then
+    # re-adds with --force.
+    if not force:
+        candidates = dup_finder(record, lib.list_records())
+        if candidates:
+            top = candidates[0].tier
+            return {
+                "status": "near_duplicate",
+                "message": (
+                    f"{len(candidates)} possible match(es) — review before adding "
+                    f"(strongest tier: {top})"
+                ),
+                "candidates": [c.to_dict() for c in candidates],
+                "resolution": "if genuinely new, re-run with --force",
+            }
+
+    # 4. Deterministic rename + provenance.
+    ext = file.suffix.lstrip(".")
+    new_filename = build_filename(record, full_hash, ext)
+    rid = record_id(record, full_hash)
+    provenance = Provenance(
+        cite_type=cite_type,
+        original_filename=file.name,
+        new_filename=new_filename,
+        date_added=_now_iso(),
+        file_hash=full_hash,
+        source=source,
+        source_id=source_id,
+    )
+    prov_dict = provenance.model_dump(exclude_none=True)
+
+    # 5. Commit: copy the file into the reference's bundle, write the record.
+    lib.store_file(file, rid, new_filename)
+
+    # 5b. Adopt any pre-add extraction staged by `cite prepare` for these exact
+    # bytes (no-op if nothing was staged), so the expensive VLM pass never repeats.
+    adopted = lib.adopt_staged(full_hash, rid)
+    if adopted:
+        prov_dict["extraction"] = Extraction(**adopted).model_dump(exclude_none=True)
+
+    record[PROVENANCE_KEY] = prov_dict
+    lib.write_record(rid, record)
+
+    return {
+        "status": "added",
+        "id": namespaced_id(rid),
+        "new_filename": new_filename,
+        "cite_type": cite_type,
+        "extracted": adopted is not None,
+        "markdown_path": adopted["markdown_path"] if adopted else None,
+        "record": record,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Commands
 # --------------------------------------------------------------------------- #
+
+
+# Maps each optional extra (declared in pyproject's [project.optional-dependencies])
+# to the import name that proves it is actually installed. We probe the *module*
+# rather than `importlib.metadata` because what callers care about is "can the
+# feature run", and probing keeps it cheap: `find_spec` only locates the module on
+# sys.path, it never imports it — so checking `extract` does not drag in docling/torch.
+_EXTRA_PROBES = {"mcp": "mcp", "extract": "docling"}
+
+
+def _installed_extras() -> dict[str, bool]:
+    """Report which optional extras are available, e.g. {'mcp': True, 'extract': False}."""
+    return {
+        extra: importlib_util.find_spec(module) is not None
+        for extra, module in _EXTRA_PROBES.items()
+    }
 
 
 @app.command()
@@ -171,6 +311,10 @@ def version() -> None:
     available; that is what proves the package is actually installed on PATH and
     not merely importable from a source checkout. Falls back to the in-package
     ``__version__`` (and ``installed: false``) when no distribution is found.
+
+    Also reports which optional extras are present under ``extras`` (a name→bool
+    map) so a caller can tell at a glance whether ``mcp`` and/or ``extract`` are
+    available without trying a command and getting an install hint.
     """
     try:
         ver = importlib_metadata.version("cite")
@@ -178,7 +322,15 @@ def version() -> None:
     except importlib_metadata.PackageNotFoundError:
         ver = __version__
         installed = False
-    _emit({"status": "ok", "tool": "cite", "version": ver, "installed": installed})
+    _emit(
+        {
+            "status": "ok",
+            "tool": "cite",
+            "version": ver,
+            "installed": installed,
+            "extras": _installed_extras(),
+        }
+    )
 
 
 @app.command()
@@ -188,6 +340,148 @@ def peek(
 ) -> None:
     """Deterministically extract a DOI / title / author guess from a file."""
     _emit(peek_mod.peek(file, max_pages=max_pages))
+
+
+def _markdown_head(text: str, *, max_chars: int) -> tuple[str, bool]:
+    """Return the leading ``max_chars`` of markdown and whether it was truncated.
+
+    Truncates on a line boundary so the head never ends mid-line (keeps the
+    title/author block the agent reads intact and the output context-frugal).
+    """
+    if len(text) <= max_chars:
+        return text, False
+    cut = text[:max_chars]
+    nl = cut.rfind("\n")
+    if nl > 0:
+        cut = cut[:nl]
+    return cut, True
+
+
+def _first_heading(text: str) -> str | None:
+    """First Markdown ATX heading (``# ...``) — a decent title guess for a report."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            title = stripped.lstrip("#").strip()
+            if title:
+                return title
+    return None
+
+
+@app.command()
+def prepare(
+    file: Path = typer.Argument(..., exists=True, readable=True),
+    head_chars: int = typer.Option(
+        2000, help="How many leading characters of the extracted markdown to return."
+    ),
+    vlm_model: str = typer.Option(
+        "granite_docling", help="Docling VLM model preset to use."
+    ),
+    library: Path | None = typer.Option(None, help="Library root."),
+) -> None:
+    """Extract a file's full markdown *before* adding it, for better citation context.
+
+    The recommended first step when the ``extract`` extra is installed — especially
+    for reports with no DOI and thin embedded metadata, where the document text
+    itself is the best source of title / author / publisher / date. It runs the
+    local Docling VLM once, caches the markdown under the file's content hash in
+    ``<library>/.staging/<hash>/``, and returns the markdown *head* plus any DOI /
+    title it can read from it. Read the head, then ``cite search`` (now better
+    informed) or build a manual record; the later ``cite add <file>`` recomputes
+    the same hash and adopts this cached extraction, so the VLM never runs twice.
+
+    Degrades cleanly: if the ``extract`` extra is not installed it returns
+    ``status: extractor_unavailable`` pointing you at the deterministic fallback
+    (``cite peek``) rather than erroring out. Slow (a vision model runs over the
+    whole document); if your runtime can background shell commands, run it detached.
+    """
+    lib = _resolve_library(library)
+    lib.init()
+
+    full_hash = content_hash(file)
+
+    # Already filed? Don't burn minutes re-extracting something in the library.
+    existing = lib.find_by_hash(full_hash)
+    if existing:
+        prov = existing.get(PROVENANCE_KEY, {})
+        stem = prov.get("new_filename", "").rsplit(".", 1)[0]
+        _emit({
+            "status": "duplicate",
+            "message": "identical file already in library — no need to prepare",
+            "id": namespaced_id(stem),
+            "hint": f"read its extracted text with `cite text {namespaced_id(stem)}`",
+        })
+        return
+
+    # Reuse a prior staged extraction (idempotent re-call) instead of re-running.
+    if lib.has_staged(full_hash):
+        meta = lib.read_staged_meta(full_hash)
+    else:
+        from cite.extract import ExtractorUnavailable, extract_to_markdown
+
+        staged_md = lib.staging_text_path(full_hash)
+        lib.clear_staged(full_hash)  # wipe any partial/stale staging first
+        try:
+            result = extract_to_markdown(file, staged_md, vlm_model=vlm_model)
+        except ExtractorUnavailable:
+            lib.clear_staged(full_hash)
+            _emit({
+                "status": "extractor_unavailable",
+                "message": "the 'extract' extra (Docling) is not installed",
+                "hint": "install it with `uv tool install 'cite[extract]'`, or use "
+                        "the deterministic fallback below",
+                "suggested_next": f"cite peek {file}",
+            })
+            return
+        except Exception as e:  # docling runtime failure — surface, don't crash
+            lib.clear_staged(full_hash)
+            _emit({"status": "error", "message": f"extraction failed: {e}"})
+            raise typer.Exit(code=1)
+
+        meta = {
+            "extractor": result["extractor"],
+            "extractor_version": result["extractor_version"],
+            "vlm_model": result["vlm_model"],
+            "image_export_mode": result["image_export_mode"],
+            "extracted_at": _now_iso(),
+            "source_file_hash": full_hash,
+            "n_images": result["n_images"],
+        }
+        lib.write_staged_meta(full_hash, meta)
+
+    text = lib.staging_text_path(full_hash).read_text(encoding="utf-8")
+    head, truncated = _markdown_head(text, max_chars=head_chars)
+
+    # Re-scan the *extracted* text for a DOI — far richer than pypdf on scanned
+    # reports — and take the first heading as a title guess.
+    doi_match = peek_mod._DOI_RE.search(text)
+    doi = peek_mod._clean_doi(doi_match.group(0)) if doi_match else None
+    title_guess = _first_heading(text)
+
+    if doi:
+        suggested_next = f"cite search --doi {doi}"
+    elif title_guess:
+        suggested_next = f'cite search --title "{title_guess}"'
+    else:
+        suggested_next = (
+            "read the head to identify title/author/publisher/date, then "
+            "`cite search` or `cite add ... --manual`"
+        )
+
+    _emit({
+        "status": "staged",
+        "file": file.name,
+        "file_hash": full_hash,
+        "markdown_path": str(lib.staging_text_path(full_hash)),
+        "head": head,
+        "head_truncated": truncated,
+        "n_images": meta.get("n_images", 0),
+        "doi": doi,
+        "title_guess": title_guess,
+        "suggested_next": suggested_next,
+        "note": "after you pick metadata, `cite add <file> ...` adopts this "
+                "extraction into the bundle (no re-extract).",
+    })
 
 
 @app.command()
@@ -270,82 +564,117 @@ def add(
     else:
         raise typer.BadParameter("provide one of --doi, --csl, or --manual")
 
-    # Strip search-helper keys so the persisted record is clean CSL.
-    for key in _HELPER_KEYS:
-        record.pop(key, None)
+    # 2-5. Validate, dedup, hash, rename, and commit (shared with `add-url`).
+    _emit(_commit_file(
+        lib, file, record, cite_type,
+        source=source, source_id=source_id, force=force, manual=manual,
+    ))
 
-    # 2. Validate required fields for the type (don't commit if incomplete).
-    verdict = run_validate(cite_type, record)
-    if verdict["status"] != "ok":
-        # On a manual add we still hold the source file, and its embedded metadata
-        # often supplies exactly the fields that are missing. Point back at peek so
-        # the agent recovers them before asking the user (and never fabricates).
-        if manual and verdict["status"] == "missing_fields":
-            verdict["suggested_next"] = (
-                f"recover the missing fields from the document before asking the "
-                f"user: cite peek {file}"
-            )
-        _emit(verdict)
+
+@app.command(name="add-url")
+def add_url(
+    url: str = typer.Argument(..., help="The web address to cite."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "--allow-near-duplicate",
+        help="Commit even if a page with the same URL is already filed. "
+        "Does NOT override the identical-bytes gate.",
+    ),
+    library: Path | None = typer.Option(None, help="Library root."),
+) -> None:
+    """Add a citation from a URL: fetch the page, snapshot it, and read its metadata.
+
+    Fetches `url` and branches on the response Content-Type:
+      • An HTML page is archived as the reference's document (`<id>.html`) and its
+        Open Graph / `<title>` / JSON-LD metadata is parsed into a `web-site`
+        record. `accessed` is set to today; on `missing_fields` (e.g. no title
+        could be read), supply the field and re-run — never fabricate it.
+      • A PDF (by Content-Type or a `%PDF` sniff) is downloaded to the library's
+        `.downloads/` and `peek`ed, then handed back with status `downloaded` so
+        you continue with the normal document flow (search -> `cite add <path>`).
+
+    URL dedup is exact: a page whose normalized URL (query string and fragment
+    stripped) already exists returns `near_duplicate`; pass --force to add anyway.
+    """
+    lib = _resolve_library(library)
+    lib.init()
+
+    try:
+        fetched = web.fetch_url(url)
+    except web.WebFetchError as exc:
+        _emit({"status": "fetch_failed", "url": url, "message": exc.message})
         return
 
-    # 3. Content hash + dedup gate.
-    full_hash = content_hash(file)
-    existing = lib.find_by_hash(full_hash)
-    if existing:
-        prov = existing.get(PROVENANCE_KEY, {})
+    # PDF branch: download + peek, then defer to the existing document workflow.
+    if web.is_pdf(fetched):
+        _emit(_download_for_add(lib, fetched))
+        return
+
+    if not web.is_html(fetched):
         _emit({
-            "status": "duplicate",
-            "message": "identical file already in library",
-            "id": namespaced_id(prov.get("new_filename", "").rsplit(".", 1)[0]),
-            "existing": prov,
+            "status": "unsupported_content_type",
+            "url": fetched.final_url,
+            "content_type": fetched.content_type,
+            "hint": "cite add-url handles HTML pages and PDFs; for other documents, "
+                    "download the file yourself and use `cite add <file>`",
         })
         return
 
-    # 3b. Near-duplicate gate: catch the *same work* under different bytes (same DOI,
-    # or close title/author/year). Skipped with --force. Commits nothing on a hit —
-    # the agent decides (definitive/strong) or asks the user (possible), then re-adds
-    # with --force. The exact-hash gate above is absolute and --force does not skip it.
-    if not force:
-        candidates = find_near_duplicates(record, lib.list_records())
-        if candidates:
-            top = candidates[0].tier
-            _emit({
-                "status": "near_duplicate",
-                "message": (
-                    f"{len(candidates)} possible match(es) — review before adding "
-                    f"(strongest tier: {top})"
-                ),
-                "candidates": [c.to_dict() for c in candidates],
-                "resolution": "if genuinely new, re-run `cite add ... --force`",
-            })
-            return
+    # HTML branch: parse metadata, snapshot the bytes, commit as a web-site.
+    record = web.parse_webpage_metadata(fetched.text, fetched.final_url)
+    record["accessed"] = _today_date_parts()
 
-    # 4. Deterministic rename + provenance.
-    ext = file.suffix.lstrip(".")
-    new_filename = build_filename(record, full_hash, ext)
-    rid = record_id(record, full_hash)
-    provenance = Provenance(
-        cite_type=cite_type,
-        original_filename=file.name,
-        new_filename=new_filename,
-        date_added=_now_iso(),
-        file_hash=full_hash,
-        source=source,
-        source_id=source_id,
-    )
-    record[PROVENANCE_KEY] = provenance.model_dump(exclude_none=True)
+    # Write the fetched bytes to a temp file so the shared pipeline can hash/store
+    # them; the snapshot is archived in the bundle as `<id>.html`. Name the temp
+    # file after the URL (not a random temp stem) so `_provenance.original_filename`
+    # stays meaningful — the URL is the "original" for a web add.
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        name = slugify(fetched.final_url, max_length=60) or "webpage"
+        snapshot = tmpdir / f"{name}.html"
+        snapshot.write_bytes(fetched.body)
+        result = _commit_file(
+            lib, snapshot, record, "web-site",
+            source="web", source_id=fetched.final_url, force=force,
+            dup_finder=find_url_duplicate,
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    _emit(result)
 
-    # 5. Commit: copy the file into the reference's bundle, write the record.
-    lib.store_file(file, rid, new_filename)
-    lib.write_record(rid, record)
 
-    _emit({
-        "status": "added",
-        "id": namespaced_id(rid),
-        "new_filename": new_filename,
-        "cite_type": cite_type,
-        "record": record,
-    })
+def _download_for_add(lib: Library, fetched: web.Fetched) -> dict:
+    """Save a fetched PDF to the library's `.downloads/` and peek it.
+
+    Stops short of adding: resolving a document's citation needs a DOI/title search
+    whose candidate the agent must choose, so we hand back the saved path plus a
+    peek (any embedded DOI/title) and point at the normal `search` -> `add` flow.
+    """
+    digest = hashlib.sha256(fetched.body).hexdigest()
+    downloads = lib.root / ".downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    dest = downloads / f"{digest[:16]}.pdf"
+    dest.write_bytes(fetched.body)
+
+    peeked = peek_mod.peek(dest)
+    doi = peeked.get("doi")
+    if doi:
+        suggested = f"cite search --doi {doi}, then cite add {dest} --csl -"
+    else:
+        suggested = (
+            f"cite peek {dest} / read it for a title, then cite search and "
+            f"cite add {dest} --csl -"
+        )
+    return {
+        "status": "downloaded",
+        "kind": "pdf",
+        "path": str(dest),
+        "source_url": fetched.final_url,
+        "peek": peeked,
+        "suggested_next": suggested,
+        "note": "PDF saved, not yet added — continue with the normal document flow.",
+    }
 
 
 @app.command()

@@ -121,7 +121,7 @@ class Provenance(BaseModel):
     new_filename: str
     date_added: str  # ISO-8601 UTC, e.g. "2026-06-04T16:10:00Z"
     file_hash: str  # full SHA-256 hex of the file's bytes
-    source: Literal["crossref", "datacite", "openalex", "manual"]
+    source: Literal["crossref", "datacite", "openalex", "manual", "web"]
     source_id: str | None = None  # DOI / OpenAlex ID, when applicable
     extraction: Extraction | None = None  # set by `cite extract`
 

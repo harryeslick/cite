@@ -42,6 +42,9 @@ def test_version_reports_package_version():
     assert out["tool"] == "cite"
     assert out["version"] == __version__
     assert isinstance(out["installed"], bool)
+    # Each declared extra is reported as a name->bool availability map.
+    assert set(out["extras"]) == {"mcp", "extract"}
+    assert all(isinstance(v, bool) for v in out["extras"].values())
 
 
 def test_guide_json_lists_seven_types():

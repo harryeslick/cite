@@ -11,9 +11,11 @@ from cite.models import CITE_TYPES, REQUIRED_FIELDS, SPEC_VERSION, TYPE_MAP
 # --------------------------------------------------------------------------- #
 
 _COMMANDS = [
-    {"name": "peek", "summary": "Extract DOI/title/metadata from a local file without adding it."},
+    {"name": "peek", "summary": "Extract DOI/title/metadata from a local file without adding it (cheap, deterministic; no extra needed)."},
+    {"name": "prepare", "summary": "Extract a file's full markdown BEFORE adding it (optional 'extract' extra), caching it by content hash and returning the markdown head + any DOI/title found. Best context for reports with no DOI/poor metadata. `cite add` later adopts the cache (no re-extract). Falls back to peek when the extra is absent."},
     {"name": "search", "summary": "Search for a reference by --doi or --title across Crossref/DataCite/OpenAlex."},
     {"name": "add", "summary": "Add a file to the library with CSL metadata (from --csl or --manual fields). Gated against identical-byte and same-work duplicates; --force commits past a near_duplicate."},
+    {"name": "add-url", "summary": "Add a citation from a URL. An HTML page is snapshotted and its metadata (Open Graph/title/JSON-LD) parsed into a web-site record (accessed = today); a PDF is downloaded + peeked and handed back (status `downloaded`) for the normal search->add flow. URL dedup is exact (query/fragment ignored)."},
     {"name": "validate", "summary": "Check that a record has all required fields for its cite_type."},
     {"name": "list", "summary": "List all records in the library (brief summary view)."},
     {"name": "get", "summary": "Retrieve the full CSL-JSON record for a given record id."},
@@ -29,11 +31,23 @@ _COMMANDS = [
 # --------------------------------------------------------------------------- #
 
 _WORKFLOW = [
-    "Run `cite peek <file>` to extract the DOI and/or title from the document.",
+    "Identify the document. If the `extract` extra is installed, prefer `cite prepare <file>`: "
+    "it extracts the full markdown once (cached by content hash) and returns the markdown head "
+    "plus any DOI/title read from the text — the best context for reports with no DOI or thin "
+    "metadata. Read the head, then proceed to search/add (a later `cite add` adopts the cache, so "
+    "the slow extraction never repeats). If `prepare` returns `extractor_unavailable` (or the extra "
+    "isn't installed), fall back to `cite peek <file>`, which cheaply reads any embedded DOI/title.",
     "Run `cite search --doi <doi>` or `cite search --title <title>` to find candidates in Crossref/DataCite/OpenAlex.",
     "Pick the best match and run `cite add <file> --csl -` (pipe CSL-JSON on stdin) to add it.",
-    "If no database match is found, gather required fields (run `cite validate` to see what's missing) "
+    "If no database match is found, gather required fields (run `cite validate` to see what's missing; "
+    "for a prepared file read the markdown head for title/author/publisher/date — never fabricate) "
     "and run `cite add <file> --manual --type <type> --field key=value ...` to add manually.",
+    "To cite a website you only have a URL for, run `cite add-url <url>`: it fetches the page, "
+    "archives an HTML snapshot as the document, and fills a web-site record from the page's "
+    "Open Graph / `<title>` / JSON-LD metadata (with `accessed` set to today). If the page had no "
+    "readable title you get `missing_fields` — supply it and re-run, never fabricate. If the URL "
+    "points at a PDF, `add-url` instead downloads it and returns `downloaded` with the saved `path`; "
+    "continue with the normal document flow (`cite search` then `cite add <path>`).",
     "If `add` returns `near_duplicate`, the same work may already be filed. Inspect each "
     "`candidates[].tier`: a `definitive` (same DOI) or `strong` (same title+author+year) "
     "match you may resolve yourself (skip it, or keep both with `--force` for e.g. a "
@@ -56,17 +70,25 @@ _NOTES = (
     "the library to catch the *same work* under different bytes, returning `status: "
     "near_duplicate` with tiered `candidates` (definitive = same DOI; strong = same "
     "title+author+year; possible = fuzzy title — ask the user). Pass `--force` to commit "
-    "past the near-duplicate gate. Citation types are limited to the 7 listed in 'types'. "
+    "past the near-duplicate gate. `add-url` dedups differently: it compares the URL alone "
+    "(query string and fragment stripped), so only an exact same-page match is rejected. "
+    "Citation types are limited to the 7 listed in 'types'. "
     "Record ids are emitted in namespaced form `cite:<stem>` (the cross-tool foreign-key "
     "form); get/remove accept either the namespaced id or the bare stem. Every response "
     "envelope carries a `spec` field naming the protocol version (see 'spec'). "
     "Each reference is a self-contained bundle directory `<id>/` holding the record "
     "(`<id>.json`), the original file (`<id>.<ext>`), and any extracted markdown "
-    "(`<id>.md` + `<id>_artifacts/`). Full-markdown extraction (`cite extract`) is an "
+    "(`<id>.md` + `<id>_artifacts/`). Full-markdown extraction is an "
     "optional, fully-local feature requiring the `extract` extra (Docling); the rest of "
-    "cite works without it. Extraction runs a vision model over the whole document and can "
-    "take minutes, blocking until it finishes; if your runtime can run shell commands in the "
-    "background, launch `cite extract <id>` detached and keep doing other work, then poll "
+    "cite works without it. It runs either BEFORE add (`cite prepare <file>`, for citation "
+    "context) or AFTER (`cite extract <id>`, for a stored reference) — same engine, and the "
+    "markdown ends up at `<id>/<id>.md` either way. `prepare` caches its output under "
+    "`<library>/.staging/<content-hash>/`; the next `cite add` of those exact bytes recomputes "
+    "the hash, adopts the cached markdown into the bundle (its `added` envelope then reports "
+    "`extracted: true` + `markdown_path`), and the VLM never runs twice. Extraction runs a "
+    "vision model over the whole document and can take minutes, blocking until it finishes; if "
+    "your runtime can run shell commands in the background, launch `cite prepare <file>` / "
+    "`cite extract <id>` detached and keep doing other work, then poll "
     "`cite text <id> --path-only` (path appears only once extraction completes) instead of "
     "waiting on it inline."
 )

@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass, field
 from difflib import SequenceMatcher
+from urllib.parse import urlsplit, urlunsplit
 
 from cite.models import issued_year
 from cite.naming import namespaced_id
@@ -48,6 +49,28 @@ def normalize_doi(doi: str | None) -> str | None:
     if not doi or not isinstance(doi, str):
         return None
     cleaned = _DOI_PREFIX.sub("", doi.strip()).lower()
+    return cleaned or None
+
+
+def normalize_url(url: str | None) -> str | None:
+    """Canonicalize a URL for *exact* equality comparison. None if absent/blank.
+
+    Deliberately coarse — the goal is "is this the same page", not "is this a
+    valid URL". Lowercases scheme + host, drops the fragment AND the query string
+    (so tracking/session noise like ``?utm_source=…`` doesn't make the same page
+    look new), and trims a single trailing slash from the path. The documented
+    consequence of dropping the query is that pages distinguished *only* by a
+    query arg (``…?id=1`` vs ``…?id=2``) normalize equal — an accepted trade-off.
+    """
+    if not url or not isinstance(url, str):
+        return None
+    parts = urlsplit(url.strip())
+    # A bare "example.com/x" (no scheme) parses with an empty netloc; keep it
+    # comparable by falling back to the raw path in that case.
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    path = parts.path.rstrip("/")
+    cleaned = urlunsplit((scheme, netloc, path, "", ""))
     return cleaned or None
 
 
@@ -108,6 +131,7 @@ def _summary(record: dict) -> dict:
         "author": first_author_family(record),
         "year": issued_year(record),
         "DOI": normalize_doi(record.get("DOI")),
+        "URL": record.get("URL"),
     }
 
 
@@ -188,4 +212,26 @@ def find_near_duplicates(incoming: dict, existing: list[dict]) -> list[Match]:
     """
     matches = [m for rec in existing if (m := _classify(incoming, rec))]
     matches.sort(key=lambda m: (_TIER_RANK.get(m.tier, 9), -m.score))
+    return matches
+
+
+def find_url_duplicate(incoming: dict, existing: list[dict]) -> list[Match]:
+    """Return existing records that share the incoming record's URL exactly.
+
+    The dedup gate for the *web* path. Unlike :func:`find_near_duplicates`, this
+    compares the **URL alone** (normalized by :func:`normalize_url`): an exact match
+    is the only thing rejected — different URLs are always treated as new sources,
+    regardless of title/author overlap. Returns ``definitive`` matches (deterministic
+    equality), or an empty list when the page is clear to add. No-op when the
+    incoming record carries no URL.
+    """
+    in_url = normalize_url(incoming.get("URL"))
+    if not in_url:
+        return []
+    matches = []
+    for rec in existing:
+        if normalize_url(rec.get("URL")) == in_url:
+            matches.append(
+                Match(_record_ref(rec), "definitive", 1.0, ["url"], _summary(rec))
+            )
     return matches

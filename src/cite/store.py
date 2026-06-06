@@ -179,6 +179,104 @@ class Library:
         return path.read_text(encoding="utf-8")
 
     # ------------------------------------------------------------------ #
+    # Pre-add staging cache (see `cite prepare`)
+    #
+    # The canonical reference id is derived from the *citation* (year, author,
+    # title), which `prepare` exists to help discover — so before `add` there is
+    # no id to key an extraction on. The one identifier available both before and
+    # after `add` is the file's content hash, so a pre-add extraction is cached
+    # under it here. `add` later recomputes that same hash (it needs it for dedup)
+    # and `adopt_staged` moves the cached markdown into the final bundle, so the
+    # expensive VLM pass runs exactly once.
+    # ------------------------------------------------------------------ #
+
+    def staging_dir(self) -> Path:
+        """Root of the pre-add extraction cache: ``<root>/.staging/``.
+
+        Dotted name keeps it out of :meth:`list_records` (which only counts
+        bundle dirs holding ``<name>/<name>.json``), so staged work is invisible
+        to the library proper until adopted.
+        """
+        return self.root / ".staging"
+
+    def staging_entry(self, file_hash: str) -> Path:
+        """Staging bundle for one file's extraction: ``<root>/.staging/<hash>/``."""
+        return self.staging_dir() / file_hash
+
+    def staging_text_path(self, file_hash: str) -> Path:
+        """Staged markdown path: ``<root>/.staging/<hash>/<hash>.md``."""
+        return self.staging_entry(file_hash) / f"{file_hash}.md"
+
+    def staging_artifacts_dir(self, file_hash: str) -> Path:
+        """Staged image artifacts: ``<root>/.staging/<hash>/<hash>_artifacts/``."""
+        return self.staging_entry(file_hash) / f"{file_hash}_artifacts"
+
+    def staging_meta_path(self, file_hash: str) -> Path:
+        """Sidecar holding the extraction provenance for a staged file."""
+        return self.staging_entry(file_hash) / "meta.json"
+
+    def has_staged(self, file_hash: str) -> bool:
+        """True if a completed staged extraction (markdown present) exists."""
+        return self.staging_text_path(file_hash).exists()
+
+    def read_staged_meta(self, file_hash: str) -> dict:
+        """Return the staged extraction's provenance sidecar (``{}`` if absent)."""
+        path = self.staging_meta_path(file_hash)
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def write_staged_meta(self, file_hash: str, meta: dict) -> Path:
+        """Write the extraction provenance sidecar for a staged file."""
+        dest = self.staging_meta_path(file_hash)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(
+            json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return dest
+
+    def clear_staged(self, file_hash: str) -> None:
+        """Remove a file's whole staging entry (markdown + artifacts + meta)."""
+        entry = self.staging_entry(file_hash)
+        if entry.exists():
+            shutil.rmtree(entry)
+
+    def adopt_staged(self, file_hash: str, record_id: str) -> dict | None:
+        """Move a staged extraction into reference ``record_id``'s bundle.
+
+        Returns the extraction provenance (with ``markdown_path`` rewritten to the
+        bundle-relative ``<id>/<id>.md``) when a staged extraction was adopted, or
+        ``None`` when nothing was staged for this hash. The expensive VLM work was
+        already paid by `prepare`, so this only renames/moves and rewrites the
+        markdown's image links from the hash stem to the id stem.
+        """
+        staged_md = self.staging_text_path(file_hash)
+        if not staged_md.exists():
+            return None
+
+        meta = self.read_staged_meta(file_hash)
+
+        # Rewrite the relative image links (Docling references "<stem>_artifacts/…",
+        # and the stem changes from the hash to the record id on adoption).
+        text = staged_md.read_text(encoding="utf-8").replace(
+            f"{file_hash}_artifacts", f"{record_id}_artifacts"
+        )
+        dest_md = self.text_path(record_id)
+        dest_md.parent.mkdir(parents=True, exist_ok=True)
+        dest_md.write_text(text, encoding="utf-8")
+
+        staged_art = self.staging_artifacts_dir(file_hash)
+        if staged_art.exists():
+            dest_art = self.artifacts_dir(record_id)
+            if dest_art.exists():
+                shutil.rmtree(dest_art)
+            shutil.move(str(staged_art), str(dest_art))
+
+        self.clear_staged(file_hash)
+        meta["markdown_path"] = f"{record_id}/{record_id}.md"
+        return meta
+
+    # ------------------------------------------------------------------ #
     # Config
     # ------------------------------------------------------------------ #
 
