@@ -60,6 +60,32 @@ def test_add_manual_then_list_then_remove(tmp_path):
     assert removed["status"] == "removed"
 
 
+def test_update_patches_fields_through_the_cli(tmp_path):
+    lib = str(tmp_path / "lib")
+    src = tmp_path / "report.pdf"
+    src.write_text("internal report contents")
+    rid = json.loads(
+        cite_mcp.add_manual(
+            file=str(src),
+            type="other-report",
+            fields={"title": "Draft", "publisher": "Agency", "issued": "2022"},
+            library=lib,
+        )
+    )["id"]
+
+    # A non-id field edit keeps the id; the fields dict expands to --field args.
+    out = json.loads(cite_mcp.update(rid, fields={"publisher": "Final Agency"}, library=lib))
+    assert out["status"] == "updated"
+    assert out["renamed"] is False
+    assert out["record"]["publisher"] == "Final Agency"
+
+    # An id-bearing edit re-stems the bundle, so the returned id differs.
+    out = json.loads(cite_mcp.update(rid, fields={"title": "Final Report"}, library=lib))
+    assert out["status"] == "updated"
+    assert out["renamed"] is True
+    assert out["id"] != rid
+
+
 def test_unknown_record_is_not_found(tmp_path):
     out = json.loads(cite_mcp.get("does-not-exist", library=str(tmp_path / "lib")))
     assert out["status"] == "not_found"

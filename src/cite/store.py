@@ -154,6 +154,59 @@ class Library:
             raise FileNotFoundError(f"Record not found: {record_id!r}")
         shutil.rmtree(self.entry_dir(record_id))
 
+    def rename_bundle(self, old_id: str, new_id: str) -> str:
+        """Re-stem an entire reference bundle from ``old_id`` to ``new_id``.
+
+        Used by ``cite update`` when an edit changes an id-bearing field (year,
+        author, or title): the deterministic id is recomputed and no longer
+        matches the directory name, so the bundle must be renamed to stay
+        consistent. Because the id is also the stem of every file in the bundle,
+        this moves the directory *and* re-stems each contained file —
+        ``<old>.json`` → ``<new>.json``, the stored document, ``<old>.md``, and
+        ``<old>_artifacts/`` — then rewrites the markdown's relative image links
+        (``<old>_artifacts`` → ``<new>_artifacts``) so they resolve in place.
+
+        The content hash is unchanged by a metadata edit, so the ``_hash6``
+        suffix is stable across the rename and dedup identity is preserved.
+
+        Returns the document's *new* filename (the re-stemmed ``<new>.<ext>``) so
+        the caller can refresh ``_provenance.new_filename``; returns ``""`` if the
+        bundle held no document file. Raises FileNotFoundError if ``old_id`` is
+        absent and FileExistsError if ``new_id`` already exists (a real id clash
+        the caller must surface rather than silently clobber).
+        """
+        old_dir = self.entry_dir(old_id)
+        if not old_dir.is_dir():
+            raise FileNotFoundError(f"Record not found: {old_id!r}")
+        new_dir = self.entry_dir(new_id)
+        if new_dir.exists():
+            raise FileExistsError(f"Target id already exists: {new_id!r}")
+
+        # Move the directory first, then re-stem its contents in place.
+        old_dir.rename(new_dir)
+
+        new_doc_filename = ""
+        for child in sorted(new_dir.iterdir()):
+            name = child.name
+            if name == f"{old_id}_artifacts":
+                child.rename(new_dir / f"{new_id}_artifacts")
+            elif name.startswith(f"{old_id}."):
+                suffix = name[len(old_id):]  # includes the leading dot, e.g. ".pdf"
+                child.rename(new_dir / f"{new_id}{suffix}")
+                # Anything that isn't the record or the markdown is the document.
+                if suffix not in (".json", ".md"):
+                    new_doc_filename = f"{new_id}{suffix}"
+
+        # Rewrite the markdown's relative artifact links to the new stem.
+        md = self.text_path(new_id)
+        if md.exists():
+            text = md.read_text(encoding="utf-8").replace(
+                f"{old_id}_artifacts", f"{new_id}_artifacts"
+            )
+            md.write_text(text, encoding="utf-8")
+
+        return new_doc_filename
+
     # ------------------------------------------------------------------ #
     # Extracted markdown (see `cite extract`)
     # ------------------------------------------------------------------ #

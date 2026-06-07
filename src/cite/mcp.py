@@ -296,6 +296,38 @@ def get(id: str, library: str | None = None) -> str:
 
 
 @mcp.tool()
+def update(
+    id: str,
+    fields: dict[str, str] | None = None,
+    remove_fields: list[str] | None = None,
+    type: CiteType | None = None,
+    library: str | None = None,
+) -> str:
+    """Amend a stored reference's metadata in place — fix a wrong or missing field.
+
+    Use this instead of remove + re-add when only the metadata is wrong (an
+    off-by-one year, a typo'd title, a missing publisher): the attached document,
+    its content hash, and provenance are preserved. `fields` sets/replaces (same
+    mini-language as add_manual: author = 'Family, Given; ...', issued/accessed =
+    'YYYY[-MM[-DD]]'); `remove_fields` deletes CSL keys; `type` changes the
+    cite_type. Editing an id-bearing field (title, author/editor, year) re-stems
+    the reference — the returned `id` then differs and `renamed` is true.
+
+    On status 'missing_fields' the edit would leave the record incomplete for its
+    type; nothing is committed — supply the field and re-call. Returns status
+    'not_found' for an unknown id, 'error' if no change was given.
+    """
+    args = ["update", id, *_lib(library)]
+    if type:
+        args += ["--type", type]
+    for key, value in (fields or {}).items():
+        args += ["--field", f"{key}={value}"]
+    for key in remove_fields or []:
+        args += ["--remove-field", key]
+    return _run(args)
+
+
+@mcp.tool()
 def remove(id: str, delete_file: bool = False, library: str | None = None) -> str:
     """Remove a record (and optionally its stored file)."""
     args = ["remove", id, *_lib(library)]

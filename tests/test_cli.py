@@ -250,3 +250,104 @@ def test_unrelated_metadata_adds_cleanly(tmp_path):
         title="Medieval Crop Rotation", author="Smith, A", year=1995,
     )
     assert out["status"] == "added"
+
+
+# --------------------------------------------------------------------------- #
+# update — in-place metadata edit, with id re-stem when needed
+# --------------------------------------------------------------------------- #
+
+
+def _add_basic(tmp_path, lib, *, title="Annual Report", year=2022):
+    """Add a minimal other-report and return its added envelope."""
+    return _run([
+        "add", str(_sample_file(tmp_path)), "--manual", "--type", "other-report",
+        "--field", f"title={title}",
+        "--field", "publisher=Agency",
+        "--field", f"issued={year}",
+        "--library", lib,
+    ])
+
+
+def test_update_non_id_field_keeps_id_and_rewrites_in_place(tmp_path):
+    lib = str(tmp_path / "lib")
+    rid = _add_basic(tmp_path, lib)["id"]
+
+    out = _run(["update", rid, "--field", "publisher=New Agency", "--library", lib])
+    assert out["status"] == "updated"
+    assert out["renamed"] is False          # publisher is not an id-bearing field
+    assert out["id"] == rid                  # id unchanged
+    assert out["record"]["publisher"] == "New Agency"
+
+    # The change is persisted and the content hash / document survive untouched.
+    got = _run(["get", rid, "--library", lib])
+    assert got["publisher"] == "New Agency"
+    assert got["_provenance"]["file_hash"]   # provenance preserved
+
+
+def test_update_title_restems_the_whole_bundle(tmp_path):
+    lib = str(tmp_path / "lib")
+    added = _add_basic(tmp_path, lib, title="Old Title")
+    rid = added["id"]
+    old_stem = rid.split(":", 1)[1]
+    old_hash = added["record"]["_provenance"]["file_hash"]
+
+    out = _run(["update", rid, "--field", "title=Brand New Title", "--library", lib])
+    assert out["status"] == "updated"
+    assert out["renamed"] is True
+    assert out["old_id"] == rid
+    new_stem = out["id"].split(":", 1)[1]
+    assert "brand-new-title" in new_stem
+    # The content-hash suffix is stable across the rename (identity preserved).
+    assert new_stem.endswith(old_stem.rsplit("_", 1)[1])
+
+    # On disk: the old bundle is gone, the new one holds re-stemmed files.
+    assert not (Path(lib) / old_stem).exists()
+    new_dir = Path(lib) / new_stem
+    assert (new_dir / f"{new_stem}.json").exists()
+    assert (new_dir / f"{new_stem}.pdf").exists()   # the document was re-stemmed
+
+    # The record is reachable under the new id, with provenance updated to match.
+    got = _run(["get", out["id"], "--library", lib])
+    assert got["title"] == "Brand New Title"
+    assert got["_provenance"]["file_hash"] == old_hash          # bytes unchanged
+    assert got["_provenance"]["new_filename"] == f"{new_stem}.pdf"
+
+
+def test_update_missing_field_rolls_back(tmp_path):
+    lib = str(tmp_path / "lib")
+    rid = _add_basic(tmp_path, lib)["id"]
+
+    # other-report requires title; removing it must fail and commit nothing.
+    out = _run(["update", rid, "--remove-field", "title", "--library", lib])
+    assert out["status"] == "missing_fields"
+    assert "title" in out["missing"]
+
+    # The original record is untouched on disk.
+    got = _run(["get", rid, "--library", lib])
+    assert got["title"] == "Annual Report"
+
+
+def test_update_type_change_rewrites_csl_type(tmp_path):
+    lib = str(tmp_path / "lib")
+    rid = _add_basic(tmp_path, lib)["id"]
+
+    out = _run(["update", rid, "--type", "trial-report", "--library", lib])
+    assert out["status"] == "updated"
+    assert out["cite_type"] == "trial-report"
+    assert out["record"]["type"] == "report"
+    assert out["record"]["genre"] == "trial report"
+    assert out["record"]["_provenance"]["cite_type"] == "trial-report"
+
+
+def test_update_unknown_id_is_not_found(tmp_path):
+    lib = str(tmp_path / "lib")
+    out = _run(["update", "nope", "--field", "title=X", "--library", lib])
+    assert out["status"] == "not_found"
+
+
+def test_update_with_no_changes_is_an_error(tmp_path):
+    lib = str(tmp_path / "lib")
+    rid = _add_basic(tmp_path, lib)["id"]
+    out = _run(["update", rid, "--library", lib])
+    assert out["status"] == "error"
+    assert "no changes" in out["message"]

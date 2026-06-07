@@ -33,6 +33,7 @@ from slugify import slugify
 from cite import __version__
 from cite.guide import guide as build_guide
 from cite.models import (
+    CITE_TYPES,
     PROVENANCE_KEY,
     SPEC_VERSION,
     Extraction,
@@ -135,13 +136,15 @@ def _parse_authors(value: str) -> list[dict]:
     return authors
 
 
-def _record_from_fields(cite_type: str, fields: list[str]) -> dict:
-    """Build a CSL-JSON record from --field key=value pairs (+ type/genre)."""
-    record: dict[str, Any] = {"type": csl_type_for(cite_type)}
-    genre = genre_for(cite_type)
-    if genre:
-        record["genre"] = genre
+def _apply_fields(record: dict[str, Any], fields: list[str]) -> None:
+    """Apply --field key=value pairs onto an existing record (in place).
 
+    The single place the ``key=value`` mini-language is interpreted, so `add
+    --manual` (building a record from scratch) and `update --field` (patching a
+    stored one) parse identically: ``author``/``editor`` expand to CSL name
+    objects, the date keys (``issued``/``accessed``, plus ``year`` as an alias
+    for ``issued``) to CSL date objects, everything else is a literal string.
+    """
     for raw in fields:
         if "=" not in raw:
             raise typer.BadParameter(f"--field must be key=value, got {raw!r}")
@@ -153,6 +156,15 @@ def _record_from_fields(cite_type: str, fields: list[str]) -> dict:
             record["issued" if key == "year" else key] = _parse_date(value)
         else:
             record[key] = value
+
+
+def _record_from_fields(cite_type: str, fields: list[str]) -> dict:
+    """Build a CSL-JSON record from --field key=value pairs (+ type/genre)."""
+    record: dict[str, Any] = {"type": csl_type_for(cite_type)}
+    genre = genre_for(cite_type)
+    if genre:
+        record["genre"] = genre
+    _apply_fields(record, fields)
     return record
 
 
@@ -724,6 +736,118 @@ def get(
         _emit(lib.read_record(stem), raw=True)
     except FileNotFoundError:
         _emit({"status": "not_found", "id": namespaced_id(stem)})
+
+
+@app.command()
+def update(
+    id: str = typer.Argument(..., help="Record id; bare stem or namespaced (cite:<stem>)."),
+    field: list[str] = typer.Option(
+        [], "--field", help="key=value to set/replace on the record (repeatable)."
+    ),
+    remove_field: list[str] = typer.Option(
+        [], "--remove-field", help="CSL key to delete from the record (repeatable)."
+    ),
+    type_: str | None = typer.Option(
+        None, "--type", help="Change the cite_type (also rewrites CSL type/genre)."
+    ),
+    library: Path | None = typer.Option(None, help="Library root."),
+) -> None:
+    """Amend a stored reference's metadata in place — the missing CRUD verb.
+
+    Applies the patches (``--field`` sets/replaces, ``--remove-field`` deletes,
+    ``--type`` changes the cite_type), re-validates against the type, and rewrites
+    the record. The attached document, its content hash, and provenance are
+    preserved — only metadata changes, so this is the safe way to fix a wrong field
+    without the remove + re-add that would re-file the document.
+
+    When an edit touches an id-bearing field (title, author/editor, or year) the
+    deterministic id changes; the whole bundle (directory + every file stem +
+    markdown image links) is renamed to match. The content-hash suffix is stable,
+    so identity survives the rename. On ``missing_fields`` nothing is committed —
+    supply the field and re-run.
+    """
+    lib = _resolve_library(library)
+    stem = local_id(id)
+    try:
+        record = lib.read_record(stem)
+    except FileNotFoundError:
+        _emit({"status": "not_found", "id": namespaced_id(stem)})
+        return
+
+    if not field and not remove_field and not type_:
+        _emit({
+            "status": "error",
+            "id": namespaced_id(stem),
+            "message": "no changes given; pass --field, --remove-field, or --type",
+        })
+        return
+
+    prov = record.get(PROVENANCE_KEY, {})
+    cite_type = type_ or prov.get("cite_type")
+    if cite_type not in CITE_TYPES:
+        _emit({
+            "status": "error",
+            "id": namespaced_id(stem),
+            "message": f"unknown cite_type {cite_type!r}; must be one of "
+                       f"{', '.join(CITE_TYPES)}",
+        })
+        return
+
+    # A type change rewrites the CSL `type`/`genre` (and the stored cite_type).
+    if type_:
+        record["type"] = csl_type_for(type_)
+        genre = genre_for(type_)
+        if genre:
+            record["genre"] = genre
+        else:
+            record.pop("genre", None)
+        prov["cite_type"] = type_
+
+    # Deletes first, then sets — so `--remove-field x --field x=...` ends up set.
+    for key in remove_field:
+        record.pop(key.strip(), None)
+    _apply_fields(record, field)
+
+    # Re-validate the patched record; commit nothing if it's now incomplete.
+    verdict = run_validate(cite_type, record)
+    if verdict["status"] != "ok":
+        verdict["id"] = namespaced_id(stem)
+        _emit(verdict)
+        return
+
+    # Recompute the id from the patched metadata + the (unchanged) content hash.
+    full_hash = prov.get("file_hash")
+    new_stem = record_id(record, full_hash) if full_hash else stem
+    renamed = new_stem != stem
+    if renamed:
+        try:
+            new_doc = lib.rename_bundle(stem, new_stem)
+        except FileExistsError:
+            _emit({
+                "status": "error",
+                "id": namespaced_id(stem),
+                "message": f"target id {namespaced_id(new_stem)} already exists; "
+                           "resolve the clash before updating",
+            })
+            return
+        if new_doc:
+            prov["new_filename"] = new_doc
+        extraction = prov.get("extraction")
+        if isinstance(extraction, dict) and extraction.get("markdown_path"):
+            extraction["markdown_path"] = f"{new_stem}/{new_stem}.md"
+
+    record[PROVENANCE_KEY] = prov
+    lib.write_record(new_stem, record)
+
+    _emit({
+        "status": "updated",
+        "id": namespaced_id(new_stem),
+        "renamed": renamed,
+        "old_id": namespaced_id(stem) if renamed else None,
+        "cite_type": cite_type,
+        "new_filename": prov.get("new_filename"),
+        "record": record,
+    })
 
 
 @app.command()
