@@ -105,6 +105,7 @@ branches; inspect `status` rather than the exit code.
 | `cite validate --type <t> --csl -`                      | Report which required fields a record is missing.                     |
 | `cite list [--full]`                                    | List references.                                                      |
 | `cite get <id>`                                         | Print one record.                                                     |
+| `cite doctor`                                           | Health-check the whole library (bad JSON, missing fields/files, orphans). |
 | `cite remove <id>`                                      | Remove a reference (deletes its whole bundle directory).              |
 | `cite extract <id>`                                     | Extract full markdown via a local Docling VLM (optional, see below).  |
 | `cite text <id> [--path-only]`                          | Print a reference's extracted markdown (or its path).                 |
@@ -138,20 +139,6 @@ fields, confirm, and re-run.
 ## Roadmap / future development
 
 Ideas not yet implemented, in rough priority order:
-
-- **Near-duplicate detection before add.** Today the dedup gate only catches
-  *identical bytes* (same content hash). Before committing a new file, also
-  search the existing library for *similar* records — matching DOI, or close
-  title/author/year — and surface any candidates so the **user can confirm**
-  whether the new file is genuinely a new entry or a copy/version of one already
-  filed. (Distinct from, and layered on top of, the existing exact-hash gate.)
-
-- **Periodic library validation / health check** (e.g. `cite doctor`). Walk the
-  whole library to keep it current and trustworthy: confirm every `refs/*.json`
-  is valid JSON and still passes its type's required-field check, verify each
-  record's `files/<new_filename>` source file is present and locatable (and flag
-  orphan files with no record), and report anything stale or broken. Intended to
-  be run on a schedule.
 
 - **Full-text search / RAG over the library** — a future *sibling* tool (not
   `cite` itself) that indexes the extracted markdown by `cite:<id>` and resolves

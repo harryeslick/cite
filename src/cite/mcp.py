@@ -296,6 +296,12 @@ def get(id: str, library: str | None = None) -> str:
 
 
 @mcp.tool()
+def doctor(library: str | None = None) -> str:
+    """Library health check: invalid JSON, missing required fields, missing/orphan files."""
+    return _run(["doctor", *_lib(library)])
+
+
+@mcp.tool()
 def update(
     id: str,
     fields: dict[str, str] | None = None,

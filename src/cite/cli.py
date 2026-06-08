@@ -44,6 +44,7 @@ from cite.models import (
     issued_year,
 )
 from cite.dedup import find_near_duplicates, find_url_duplicate
+from cite.doctor import run_doctor
 from cite.naming import (
     build_filename,
     content_hash,
@@ -720,6 +721,13 @@ def list_(
             "new_filename": prov.get("new_filename"),
         })
     _emit({"count": len(summaries), "references": summaries})
+
+
+@app.command()
+def doctor(library: Path | None = typer.Option(None, help="Library root.")) -> None:
+    """Validate the whole library: bad JSON, missing fields, missing/orphan files."""
+    lib = _resolve_library(library)
+    _emit(run_doctor(lib))
 
 
 @app.command()

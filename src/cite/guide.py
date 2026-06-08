@@ -19,6 +19,7 @@ _COMMANDS = [
     {"name": "validate", "summary": "Check that a record has all required fields for its cite_type."},
     {"name": "list", "summary": "List all records in the library (brief summary view)."},
     {"name": "get", "summary": "Retrieve the full CSL-JSON record for a given record id."},
+    {"name": "doctor", "summary": "Health-check the whole library: reports records with invalid JSON, missing provenance, missing required fields, a missing source file, or orphan bundles. Read-only; emits a summary plus one short line per problem."},
     {"name": "update", "summary": "Amend a stored record's metadata in place: --field key=value sets/replaces, --remove-field deletes, --type changes the cite_type. Re-validates and preserves the document/hash/provenance; editing an id-bearing field (title/author/year) re-stems the whole bundle (response reports `renamed`). Use instead of remove + re-add to fix a wrong field."},
     {"name": "remove", "summary": "Remove a record from the library (deletes the whole reference bundle)."},
     {"name": "extract", "summary": "Extract full markdown for a reference via a local Docling VLM (optional 'extract' extra). Slow/blocking — run in the background and poll `cite text` when your runtime allows."},

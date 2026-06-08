@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-06-08
+
+### Added
+
+- `cite doctor` CLI command and `doctor` MCP tool: a read-only health check over the whole library (roadmap item #2). Walks every bundle and flags `invalid_json` (unparseable record), `missing_provenance` (no `_provenance.cite_type`), `missing_fields` (fails its type's required-field check), `missing_file` (the `_provenance.new_filename` source document is absent), and `orphan` (a bundle directory with no record JSON). Returns a context-frugal envelope — `status` (`ok`/`problems`), `checked`/`healthy`/`problem_count` counts, a per-class `summary` histogram, and one short line per problem — never the full records.
+- `src/cite/doctor.py`: pure `run_doctor(lib)` engine. Walks the filesystem directly (not `list_records()`, which silently skips unparseable bundles — the very corruption the check must surface), reusing `models.missing_required_fields` and the `cite.toml` / `.staging/` skip rules.
+
+### Changed
+
+- README roadmap: removed the two now-shipped items — near-duplicate detection (already implemented in `dedup.py`) and the library health check (this change). Documented `cite doctor` in the Commands table.
+
 ## [0.2.2] - 2026-06-07
 
 ### Added
