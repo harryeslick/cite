@@ -33,6 +33,12 @@ _COMMANDS = [
 # --------------------------------------------------------------------------- #
 
 _WORKFLOW = [
+    "A library is the directory marked by `cite.toml`. `add`/`add-url`/`prepare` only "
+    "write into an *existing* library and error with a `cite init` hint if `cite.toml` "
+    "is missing — they never create one implicitly (a typo'd `--library` path must not "
+    "spin up a stray library). If you get that error, confirm the intended path with the "
+    "USER, then run `cite init --library <path> --yes` to create it (creation is a "
+    "deliberate, approved act, not an automatic side effect of adding).",
     "Identify the document. If the `extract` extra is installed, prefer `cite prepare <file>`: "
     "it extracts the full markdown once (cached by content hash) and returns the markdown head "
     "plus any DOI/title read from the text — the best context for reports with no DOI or thin "

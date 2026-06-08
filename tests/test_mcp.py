@@ -34,6 +34,7 @@ def test_list_empty_library(tmp_path):
 
 def test_add_manual_then_list_then_remove(tmp_path):
     lib = str(tmp_path / "lib")
+    assert json.loads(cite_mcp.init(library=lib, yes=True))["status"] == "created"
     src = tmp_path / "report.pdf"
     src.write_text("internal report contents")
 
@@ -62,6 +63,7 @@ def test_add_manual_then_list_then_remove(tmp_path):
 
 def test_update_patches_fields_through_the_cli(tmp_path):
     lib = str(tmp_path / "lib")
+    assert json.loads(cite_mcp.init(library=lib, yes=True))["status"] == "created"
     src = tmp_path / "report.pdf"
     src.write_text("internal report contents")
     rid = json.loads(

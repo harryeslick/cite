@@ -97,6 +97,21 @@ def _resolve_library(library: Path | None) -> Library:
     return Library(library)
 
 
+def _require_initialized(lib: Library) -> None:
+    """Bail with a clear error if ``lib`` isn't a real library yet.
+
+    ``cite.toml`` is the sole marker of an initialized library; creating one
+    is a deliberate act reserved for ``cite init`` (never implicit on add).
+    """
+    if not lib.is_initialized():
+        _emit({
+            "status": "error",
+            "message": f"no cite library at '{lib.root}' (missing cite.toml)",
+            "hint": f"run: cite init --library {lib.root}",
+        })
+        raise typer.Exit(code=1)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -409,7 +424,7 @@ def prepare(
     whole document); if your runtime can background shell commands, run it detached.
     """
     lib = _resolve_library(library)
-    lib.init()
+    _require_initialized(lib)
 
     full_hash = content_hash(file)
 
@@ -535,7 +550,7 @@ def add(
 ) -> None:
     """Add a file to the library: fetch/validate, hash, rename, write record."""
     lib = _resolve_library(library)
-    lib.init()
+    _require_initialized(lib)
 
     # 1. Assemble the base CSL record and figure out source/cite_type.
     source = "manual"
@@ -611,7 +626,7 @@ def add_url(
     stripped) already exists returns `near_duplicate`; pass --force to add anyway.
     """
     lib = _resolve_library(library)
-    lib.init()
+    _require_initialized(lib)
 
     try:
         fetched = web.fetch_url(url)
@@ -721,6 +736,41 @@ def list_(
             "new_filename": prov.get("new_filename"),
         })
     _emit({"count": len(summaries), "references": summaries})
+
+
+@app.command()
+def init(
+    library: Path | None = typer.Option(None, help="Library root."),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Create without prompting for confirmation."
+    ),
+) -> None:
+    """Create a new cite library at --library (the only way to create one).
+
+    Writes ``cite.toml`` — the marker that distinguishes a real library from an
+    arbitrary directory. Every other command that writes to a library (``add``,
+    ``add-url``, ``prepare``) *requires* this marker and refuses to create one
+    implicitly, so a typo'd ``--library`` path can no longer spin up a stray
+    library by accident. Idempotent: re-running against an already-initialized
+    library is a no-op and reports ``already_initialized``.
+
+    Creating a *new* library is interactive by default — it prompts for
+    confirmation — since it's the one action in this gate that must be a
+    deliberate, user-approved choice. Pass --yes to skip the prompt for
+    scripted/agent use once the human has approved the location out of band.
+    """
+    lib = _resolve_library(library)
+    if lib.is_initialized():
+        _emit({"status": "already_initialized", "library": str(lib.root)})
+        return
+
+    if not yes:
+        if not typer.confirm(f"Create a new cite library at '{lib.root}'?"):
+            _emit({"status": "cancelled", "library": str(lib.root)})
+            raise typer.Exit(code=1)
+
+    lib.init()
+    _emit({"status": "created", "library": str(lib.root)})
 
 
 @app.command()

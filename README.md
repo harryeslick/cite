@@ -55,6 +55,12 @@ The library resolves from `--library <path>`, else `$CITE_LIBRARY`, else
 - **Per-project library** — pass `--library ./library`, or set a project-local
   `CITE_LIBRARY`, to scope citations to one project.
 
+`cite.toml` is the marker that makes a directory a real library — `cite init`
+is the *only* command that creates one (it asks for confirmation unless you pass
+`--yes`). `add`/`add-url`/`prepare` refuse to write into a directory that lacks
+`cite.toml`, so a typo'd `--library` path can't silently spin up a stray library;
+they error with a `cite init ...` hint instead.
+
 Either way the library is laid out as a directory of **per-entity bundles** —
 each reference is a self-contained directory named by its id:
 
@@ -96,6 +102,7 @@ branches; inspect `status` rather than the exit code.
 
 | Command                                                 | Purpose                                                               |
 | ------------------------------------------------------- | --------------------------------------------------------------------- |
+| `cite init [--library <path>] [--yes]`                  | Create a new library (writes `cite.toml`). The *only* way to create one — prompts for confirmation unless `--yes`. |
 | `cite peek <file>`                                      | Deterministically extract embedded metadata + a DOI from a file.      |
 | `cite search --doi <doi>`                               | Look up a DOI via CrossRef, then DataCite.                            |
 | `cite search --title "<t>" [--author <a>] [--year <y>]` | Fuzzy search via OpenAlex.                                            |

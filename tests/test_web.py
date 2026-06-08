@@ -34,6 +34,14 @@ def _today_parts():
     return [now.year, now.month, now.day]
 
 
+def _new_lib(tmp_path: Path, name: str = "lib") -> Path:
+    """Create and initialize a fresh library — `add-url` now requires this."""
+    lib = tmp_path / name
+    out = _run(["init", "--library", str(lib), "--yes"])
+    assert out["status"] == "created", out
+    return lib
+
+
 # --------------------------------------------------------------------------- #
 # Pure parsing
 # --------------------------------------------------------------------------- #
@@ -126,7 +134,7 @@ _PAGE = """
 
 
 def test_add_url_html_snapshots_and_commits(tmp_path, monkeypatch):
-    lib = tmp_path / "lib"
+    lib = _new_lib(tmp_path)
     url = "https://example.org/climate"
     monkeypatch.setattr(web, "fetch_url", lambda u: _html_fetched(_PAGE, url))
 
@@ -151,7 +159,7 @@ def test_add_url_html_snapshots_and_commits(tmp_path, monkeypatch):
 
 
 def test_add_url_missing_title_returns_missing_fields(tmp_path, monkeypatch):
-    lib = tmp_path / "lib"
+    lib = _new_lib(tmp_path)
     monkeypatch.setattr(
         web, "fetch_url",
         lambda u: _html_fetched("<html><head></head><body>x</body></html>", "https://no-title.test/p"),
@@ -162,7 +170,7 @@ def test_add_url_missing_title_returns_missing_fields(tmp_path, monkeypatch):
 
 
 def test_add_url_dedup_is_exact_url_only(tmp_path, monkeypatch):
-    lib = tmp_path / "lib"
+    lib = _new_lib(tmp_path)
     url = "https://example.org/climate"
 
     # First add succeeds.
@@ -194,7 +202,7 @@ def test_add_url_dedup_is_exact_url_only(tmp_path, monkeypatch):
 
 
 def test_add_url_pdf_downloads_and_peeks(tmp_path, monkeypatch):
-    lib = tmp_path / "lib"
+    lib = _new_lib(tmp_path)
     pdf_bytes = b"%PDF-1.4 fake pdf body"
     monkeypatch.setattr(
         web, "fetch_url",
@@ -214,7 +222,7 @@ def test_add_url_pdf_downloads_and_peeks(tmp_path, monkeypatch):
 
 def test_add_url_pdf_detected_by_magic_bytes(tmp_path, monkeypatch):
     """A PDF mislabeled as octet-stream is still routed to the PDF branch."""
-    lib = tmp_path / "lib"
+    lib = _new_lib(tmp_path)
     monkeypatch.setattr(
         web, "fetch_url",
         lambda u: Fetched("https://x.test/d", "application/octet-stream", b"%PDF-1.7 x", ""),
@@ -224,7 +232,7 @@ def test_add_url_pdf_detected_by_magic_bytes(tmp_path, monkeypatch):
 
 
 def test_add_url_unsupported_content_type(tmp_path, monkeypatch):
-    lib = tmp_path / "lib"
+    lib = _new_lib(tmp_path)
     monkeypatch.setattr(
         web, "fetch_url",
         lambda u: Fetched("https://x.test/img", "image/png", b"\x89PNG\r\n", ""),
@@ -235,7 +243,7 @@ def test_add_url_unsupported_content_type(tmp_path, monkeypatch):
 
 
 def test_add_url_fetch_failure_returns_clean_envelope(tmp_path, monkeypatch):
-    lib = tmp_path / "lib"
+    lib = _new_lib(tmp_path)
 
     def _boom(u):
         raise web.WebFetchError("could not fetch https://dead.test/: timeout")

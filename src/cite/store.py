@@ -62,11 +62,20 @@ class Library:
     # Initialisation
     # ------------------------------------------------------------------ #
 
+    def is_initialized(self) -> bool:
+        """Whether ``cite.toml`` exists — the marker that this is a real library."""
+        return (self.root / "cite.toml").exists()
+
     def init(self) -> None:
         """Create root and cite.toml if missing (idempotent).
 
         Per-entity bundle directories are created lazily on write_record /
         store_file, so there are no fixed sub-trees to provision here.
+
+        Library *creation* is a deliberate, user-approved act — this should
+        only be called from the explicit ``cite init`` command, never from
+        commands that merely write into an existing library (see
+        ``is_initialized``).
         """
         self.root.mkdir(parents=True, exist_ok=True)
 

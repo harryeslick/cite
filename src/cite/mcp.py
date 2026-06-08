@@ -125,6 +125,17 @@ def guide() -> str:
 
 
 @mcp.tool()
+def init(library: str | None = None, yes: bool = False) -> str:
+    """Create a new cite library at `library` — the only way to create one.
+
+    `add`/`add-url`/`prepare` now require an existing library (marked by
+    `cite.toml`) and refuse to create one implicitly. Pass yes=True once a
+    human has approved the location — the underlying CLI prompts for
+    confirmation otherwise, which would hang a non-interactive subprocess."""
+    return _run(["init", *_lib(library), *(["--yes"] if yes else [])])
+
+
+@mcp.tool()
 def peek(file: str, max_pages: int = 5) -> str:
     """Extract an embedded DOI/title/author from a local file without adding it.
     Call this tool directly — never via the `cite` CLI or a script."""

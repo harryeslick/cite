@@ -63,7 +63,10 @@ def _fake_extractor(n_images: int = 1, body: str = "", *, calls: list | None = N
 def _report(tmp_path: Path) -> tuple[Path, str]:
     f = tmp_path / "report.pdf"
     f.write_text("a council drought report with no DOI and empty metadata")
-    return f, str(tmp_path / "lib")
+    lib = str(tmp_path / "lib")
+    out = _run(["init", "--library", lib, "--yes"])
+    assert out["status"] == "created", out
+    return f, lib
 
 
 def test_prepare_stages_markdown_and_returns_head(tmp_path, monkeypatch):
@@ -252,6 +255,7 @@ def test_real_prepare_then_add_adopts_extraction(tmp_path):
     draw.rectangle([200, 300, 800, 900], fill=(40, 110, 200), outline="black", width=4)
     page.save(src, "PDF", resolution=100.0)
     lib = str(tmp_path / "lib")
+    assert _cli(["init", "--library", lib, "--yes"])["status"] == "created"
 
     prep = _cli(["prepare", str(src), "--library", lib])
     assert prep["status"] == "staged"

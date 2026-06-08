@@ -34,6 +34,14 @@ def _other_file(tmp_path: Path, name: str = "rescan.pdf") -> Path:
     return f
 
 
+def _new_lib(tmp_path: Path, name: str = "lib") -> str:
+    """Create and initialize a fresh library — `add`/`add-url` now require this."""
+    lib = str(tmp_path / name)
+    out = _run(["init", "--library", lib, "--yes"])
+    assert out["status"] == "created", out
+    return lib
+
+
 def test_version_reports_package_version():
     from cite import __version__
 
@@ -56,10 +64,11 @@ def test_guide_json_lists_seven_types():
 
 def test_add_manual_missing_fields_returns_hint(tmp_path):
     f = _sample_file(tmp_path)
+    lib = _new_lib(tmp_path)
     out = _run([
         "add", str(f), "--manual", "--type", "web-site",
         "--field", "title=Widget page",
-        "--library", str(tmp_path / "lib"),
+        "--library", lib,
     ])
     assert out["status"] == "missing_fields"
     assert "URL" in out["missing"] and "accessed" in out["missing"]
@@ -69,10 +78,11 @@ def test_add_manual_missing_fields_returns_hint(tmp_path):
 def test_add_manual_unknown_type_returns_clean_error(tmp_path):
     """An invalid cite_type yields a one-line JSON error, not a Rich traceback."""
     f = _sample_file(tmp_path)
+    lib = _new_lib(tmp_path)
     out = _run([
         "add", str(f), "--manual", "--type", "report",  # not in the vocabulary
         "--field", "title=Foo",
-        "--library", str(tmp_path / "lib"),
+        "--library", lib,
     ])
     assert out["status"] == "error"
     assert "Unknown cite_type 'report'" in out["message"]
@@ -82,7 +92,7 @@ def test_add_manual_unknown_type_returns_clean_error(tmp_path):
 
 def test_add_manual_complete_then_duplicate_then_list(tmp_path):
     f = _sample_file(tmp_path)
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     common = [
         "add", str(f), "--manual", "--type", "trial-report",
         "--field", "title=Phase II Trial of Widget X",
@@ -117,7 +127,7 @@ def test_validate_via_stdin(tmp_path):
 
 def test_get_and_remove(tmp_path):
     f = _sample_file(tmp_path)
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     added = _run([
         "add", str(f), "--manual", "--type", "other-report",
         "--field", "title=Annual Report",
@@ -138,7 +148,7 @@ def test_get_and_remove(tmp_path):
 
 def test_id_is_namespaced_and_get_accepts_either_form(tmp_path):
     f = _sample_file(tmp_path)
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     added = _run([
         "add", str(f), "--manual", "--type", "other-report",
         "--field", "title=Annual Report",
@@ -184,7 +194,7 @@ def _add_report(file: Path, lib: str, *, title, author, year, doi=None, force=Fa
 
 
 def test_near_duplicate_definitive_on_doi_then_force(tmp_path):
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     first = _add_report(
         _sample_file(tmp_path), lib,
         title="Soil Moisture Study", author="Smith, Jane", year=2023, doi="10.1/abc",
@@ -214,7 +224,7 @@ def test_near_duplicate_definitive_on_doi_then_force(tmp_path):
 
 
 def test_near_duplicate_strong_on_title_author_year(tmp_path):
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     _add_report(
         _sample_file(tmp_path), lib,
         title="Annual Wheat Yield Report", author="Brown, Sam", year=2022,
@@ -228,7 +238,7 @@ def test_near_duplicate_strong_on_title_author_year(tmp_path):
 
 
 def test_exact_hash_gate_beats_near_duplicate_and_ignores_force(tmp_path):
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     f = _sample_file(tmp_path)
     _add_report(f, lib, title="Identical Report", author="Lee, Kim", year=2021)
 
@@ -240,7 +250,7 @@ def test_exact_hash_gate_beats_near_duplicate_and_ignores_force(tmp_path):
 
 
 def test_unrelated_metadata_adds_cleanly(tmp_path):
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     _add_report(
         _sample_file(tmp_path), lib,
         title="Quantum Computing Basics", author="Feynman, R", year=2001,
@@ -269,7 +279,7 @@ def _add_basic(tmp_path, lib, *, title="Annual Report", year=2022):
 
 
 def test_update_non_id_field_keeps_id_and_rewrites_in_place(tmp_path):
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     rid = _add_basic(tmp_path, lib)["id"]
 
     out = _run(["update", rid, "--field", "publisher=New Agency", "--library", lib])
@@ -285,7 +295,7 @@ def test_update_non_id_field_keeps_id_and_rewrites_in_place(tmp_path):
 
 
 def test_update_title_restems_the_whole_bundle(tmp_path):
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     added = _add_basic(tmp_path, lib, title="Old Title")
     rid = added["id"]
     old_stem = rid.split(":", 1)[1]
@@ -314,7 +324,7 @@ def test_update_title_restems_the_whole_bundle(tmp_path):
 
 
 def test_update_missing_field_rolls_back(tmp_path):
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     rid = _add_basic(tmp_path, lib)["id"]
 
     # other-report requires title; removing it must fail and commit nothing.
@@ -328,7 +338,7 @@ def test_update_missing_field_rolls_back(tmp_path):
 
 
 def test_update_type_change_rewrites_csl_type(tmp_path):
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     rid = _add_basic(tmp_path, lib)["id"]
 
     out = _run(["update", rid, "--type", "trial-report", "--library", lib])
@@ -340,13 +350,13 @@ def test_update_type_change_rewrites_csl_type(tmp_path):
 
 
 def test_update_unknown_id_is_not_found(tmp_path):
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     out = _run(["update", "nope", "--field", "title=X", "--library", lib])
     assert out["status"] == "not_found"
 
 
 def test_update_with_no_changes_is_an_error(tmp_path):
-    lib = str(tmp_path / "lib")
+    lib = _new_lib(tmp_path)
     rid = _add_basic(tmp_path, lib)["id"]
     out = _run(["update", rid, "--library", lib])
     assert out["status"] == "error"
