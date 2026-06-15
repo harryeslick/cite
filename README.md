@@ -175,6 +175,8 @@ Ideas not yet implemented, in rough priority order:
   the core library. Could be backed by metadata tags in the `_provenance` block
   or a simple topic-to-id mapping file.
 
+- **centralised library** at user level. copies selected files into project dir when required. prevents user level duplication between projects. 
+
 ## Local markdown extraction (optional)
 
 `cite extract <id>` converts a stored reference's source document to full markdown
@@ -209,10 +211,11 @@ dev form.
 
 For clients that call typed tools instead of a shell (Claude Desktop, Cursor,
 …), `cite[mcp]` ships a thin MCP server, `cite-mcp`. It adds no logic — each tool
-shells out to `cite` and returns its JSON unchanged, so the CLI stays the single
-source of truth. The tools mirror the CLI's deterministic operations: `guide`,
-`peek`, `search`, `add_by_doi` / `add_from_csl` / `add_manual`, `validate`,
-`list`, `get`, `remove`, `extract`, `text`, `export`.
+calls `cite.ops` in-process and returns the same JSON envelopes as the CLI, so
+the CLI and MCP server share one deterministic core. The tools mirror the core
+operations: `guide`, `init`, `peek`, `prepare`, `search`, `add_by_doi` /
+`add_from_csl` / `add_manual`, `add_url`, `validate`, `list`, `get`, `doctor`,
+`update`, `remove`, `extract`, `text`, `export`.
 
 Register it (set `CITE_LIBRARY` so the server knows which library to use):
 

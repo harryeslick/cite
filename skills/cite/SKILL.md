@@ -21,30 +21,69 @@ allowed citation types, and the required fields for each. Do this if you are
 unsure of a flag or which fields a type needs.
 
 ## Standard workflow (adding a file)
-1. **Identify**: `uv run cite peek <file>` → returns an embedded-metadata
-   title/author and any DOI found in the first pages. Use `suggested_next`.
-2. **Search**: if a DOI was found, `uv run cite search --doi <doi>`. Otherwise
+1. **Confirm the library exists**: writing commands (`add`, `add-url`,
+   `prepare`) require a `cite.toml` marker. If the tool reports no initialized
+   library, confirm the intended path with the user, then run
+   `uv run cite init --library <path> --yes`. Never let a typo create a stray
+   library implicitly.
+2. **Identify**: prefer `uv run cite prepare <file>` when the `extract` extra is
+   installed, especially for reports with no DOI or thin metadata. It extracts
+   markdown once into a staging cache, returns the markdown `head`, and a later
+   `add` adopts the cached extraction. If `prepare` returns
+   `extractor_unavailable`, or the file clearly has a printed DOI and speed
+   matters, use `uv run cite peek <file>`.
+3. **Search**: if a DOI was found, `uv run cite search --doi <doi>`. Otherwise
    `uv run cite search --title "<title>" [--author <surname>] [--year <yyyy>]`.
-3. **Add the match**: pick the best candidate from `.candidates`, then pipe just
+4. **Add the match**: pick the best candidate from `.candidates`, then pipe just
    that one object: `echo '<candidate-json>' | uv run cite add <file> --csl -`.
    The tool validates, content-hashes (dedup), renames the file, and writes the
-   record. A `status: duplicate` means the same bytes are already filed.
-4. **No database match** (internal reports, etc.): pick the right type, and add
-   manually. If you are missing required fields the tool tells you which:
+   record. DOI lookup can also be filed with `uv run cite add <file> --doi <doi>`.
+   A `status: duplicate` means the same bytes are already filed.
+5. **No database match** (internal reports, etc.): pick the right type, and add
+   manually. Re-check the prepared markdown head / peek output before asking the
+   user. If required fields are missing the tool tells you which:
    `uv run cite add <file> --manual --type <cite_type> --field title=... --field author="Smith, Jane; Lee, Kim" --field issued=2023 ...`
    - `author` is `Family, Given; Family2, Given2` (a comma-less entry becomes an
      organisational/literal name). `issued`/`accessed` are `YYYY[-MM[-DD]]`.
    - On `status: missing_fields`, ask the **user** for exactly the `missing`
      fields, get their confirmation, then re-run with those `--field`s added.
      Do not invent bibliographic facts — confirm them.
+6. **Bare URL**: use `uv run cite add-url <url>` only when the user has a web
+   address rather than a local file. HTML pages are snapshotted as `web-site`
+   records. PDFs are downloaded and returned with `status: downloaded`; continue
+   with the normal document workflow using the returned path.
 
 ## The 7 citation types
 `journal-article`, `book`, `book-section`, `web-site`, `trial-report`,
 `data-set`, `other-report`. (See `cite guide` for required fields per type.)
 
+## Duplicate / correction rules
+- `status: duplicate` means identical file bytes are already filed — stop.
+- `status: near_duplicate` means the same work may already be filed. You may
+  resolve `definitive` / `strong` matches yourself; show `possible` matches to
+  the user before re-running with `--force`.
+- Use `uv run cite update <id> --field key=value ...` to fix stored metadata
+  instead of remove + re-add. Changing id-bearing fields may re-stem the bundle.
+- Record ids are emitted as `cite:<stem>`; commands accept either that namespaced
+  id or the bare stem.
+
 ## Other commands
 - `uv run cite list` / `uv run cite get <id>` — browse the library.
-- `uv run cite remove <id> [--delete-file]` — remove a record.
+- `uv run cite doctor` — health-check records, provenance, source files, and
+  orphan bundles.
+- `uv run cite remove <id>` — remove a record and its whole bundle.
 - `uv run cite export --format csl|bibtex|pandoc` — emit standard formats.
 
 Library location: `--library <path>`, else `$CITE_LIBRARY`, else `./library`.
+Each reference is a self-contained bundle dir `<id>/` (record + original file +
+any extracted markdown). A prepared file's staged extraction is adopted by a
+later add of the same bytes, so the slow extraction is not repeated.
+
+## Optional: full-text markdown
+- `cite prepare <file>` extracts markdown before adding, for citation context.
+- `cite extract <id>` converts a stored reference to full markdown locally
+  (Docling VLM); output goes to `<id>/<id>.md` (+ `<id>_artifacts/`). Needs the
+  `extract` extra — on `status: error` with an install hint, tell the user to
+  install `cite[extract]`; never treat its absence as a failure of the core
+  workflow.
+- `cite text <id> [--path-only]` prints the extracted markdown (or its path).

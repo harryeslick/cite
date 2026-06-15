@@ -1,9 +1,9 @@
 """Tests for the thin MCP wrapper (`cite.mcp`).
 
-The MCP tools shell out to the real `cite` binary (installed on PATH by
-`uv sync`/`uv tool install`), so these are fast, offline integration tests that
-verify argv construction, stdin piping, and the `--library` override pass through
-correctly. They require the `mcp` extra — skipped if it isn't installed.
+The MCP tools call the same `cite.ops` functions as the CLI and JSON-encode the
+returned envelopes, so these are fast, offline wrapper tests for direct
+in-process behavior and the `library` override. They require the `mcp` extra —
+skipped if it isn't installed.
 """
 
 import json
@@ -93,15 +93,16 @@ def test_unknown_record_is_not_found(tmp_path):
     assert out["status"] == "not_found"
 
 
-def test_uncaught_cli_error_collapses_to_one_clean_line():
-    """An uncaught CLI exception comes back as a single-line message, not a
-    multi-KB Rich traceback. The CLI itself keeps pretty tracebacks for humans;
-    the MCP forces TYPER_STANDARD_TRACEBACK so _last_line lifts the full message.
+def test_bad_input_returns_a_clean_error_envelope():
+    """Malformed input to a tool comes back as a `{"status": "error"}` envelope
+    with a one-line message — not a traceback. ops raises ValueError (a
+    JSONDecodeError here) for bad input; the MCP shell catches it and returns the
+    structured envelope directly (no subprocess, no Rich-traceback workaround).
     """
     out = json.loads(cite_mcp.validate("book", "not valid json"))
     assert out["status"] == "error"
-    # The real exception message survives intact...
-    assert "JSONDecodeError" in out["message"]
+    # The real parse error message survives, on a single clean line...
+    assert out["message"]
     # ...with none of the traceback noise (box-art, frames, locals).
     assert "─" not in out["message"]  # Rich box-drawing char
     assert "Traceback" not in out["message"]
