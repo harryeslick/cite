@@ -137,6 +137,27 @@ class Library:
                 return record
         return None
 
+    def find_id_by_hash(self, file_hash: str) -> str | None:
+        """Return the record id (bundle dir name) whose record matches the hash, else None.
+
+        Complements :meth:`find_by_hash` (which returns the record dict). The cross-
+        library sync needs the *id* — the on-disk bundle name — to locate and replace
+        a bundle when a metadata edit may have changed its content-derived id.
+        """
+        if not self.root.is_dir():
+            return None
+        for entry in sorted(self.root.iterdir(), key=lambda p: p.name):
+            if not entry.is_dir():
+                continue
+            record_file = entry / f"{entry.name}.json"
+            if not record_file.exists():
+                continue
+            record = json.loads(record_file.read_text(encoding="utf-8"))
+            provenance = record.get(PROVENANCE_KEY)
+            if isinstance(provenance, dict) and provenance.get("file_hash") == file_hash:
+                return entry.name
+        return None
+
     # ------------------------------------------------------------------ #
     # File management
     # ------------------------------------------------------------------ #
@@ -152,6 +173,26 @@ class Library:
         dest = entry / new_filename
         shutil.copy2(src, dest)
         return dest
+
+    def copy_bundle_to(self, record_id: str, target: "Library") -> Path:
+        """Copy one reference's whole bundle into ``target``, returning the dest path.
+
+        A reference is a self-contained directory, so a recursive directory copy is a
+        complete transfer (record + document + markdown + artifacts) with no relational
+        integrity to maintain — the basis of cross-library reuse (central library sync
+        and ``pull``). Any existing target bundle is removed first, so this is a clean
+        replace, not a merge. Raises ``FileNotFoundError`` if the source bundle is
+        missing.
+        """
+        src = self.entry_dir(record_id)
+        if not src.is_dir():
+            raise FileNotFoundError(f"Record not found: {record_id!r}")
+        dst = target.entry_dir(record_id)
+        if dst.exists():
+            shutil.rmtree(dst)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dst)
+        return dst
 
     def remove(self, record_id: str) -> None:
         """Delete the whole bundle directory (record + file + markdown + artifacts).

@@ -291,9 +291,13 @@ def validate(
 def list_(
     library: Path | None = typer.Option(None, help="Library root."),
     full: bool = typer.Option(False, help="Emit full records instead of summaries."),
+    central: bool = typer.Option(False, "--central", help="List the central ~/.cite/ library."),
 ) -> None:
     """List references in the library."""
-    lib = _resolve_library(library)
+    if central:
+        lib = ops.resolve_central()
+    else:
+        lib = _resolve_library(library)
     _emit(ops.library_view(lib, full=full))
 
 
@@ -394,20 +398,45 @@ def update(
 
 
 @app.command()
+def pull(
+    id: str = typer.Argument(..., help="Record id in the central library."),
+    library: Path | None = typer.Option(None, help="Library root."),
+) -> None:
+    """Copy a reference from the central ~/.cite/ library into the project library.
+
+    The explicit cross-project reuse path: browse the central library with
+    ``cite list --central``, pick an id, and pull it into the current project.
+    The copy is full and independent — the project stays self-contained.
+    """
+    lib = _resolve_library(library)
+    _require_initialized(lib)
+    _emit(ops.pull(lib, id))
+
+
+@app.command()
 def remove(
     id: str = typer.Argument(..., help="Record id; bare stem or namespaced (cite:<stem>)."),
     delete_file: bool = typer.Option(
         False, help="Deprecated/no-op: removal now deletes the whole reference bundle."
     ),
     library: Path | None = typer.Option(None, help="Library root."),
+    central: bool = typer.Option(
+        False, "--central", help="Remove from the central ~/.cite/ library instead."
+    ),
 ) -> None:
     """Remove a reference from the library.
 
     A reference is a self-contained bundle directory, so removal is all-or-nothing:
     the record, the original file, and any extracted markdown/artifacts go together.
     The legacy ``--delete-file`` flag is accepted but ignored.
+
+    With ``--central``, operates on the central library at ``~/.cite/`` instead of
+    the project library. Project removal does NOT affect the central library.
     """
-    lib = _resolve_library(library)
+    if central:
+        lib = ops.resolve_central()
+    else:
+        lib = _resolve_library(library)
     _emit(ops.remove(lib, id))
 
 

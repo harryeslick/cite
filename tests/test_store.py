@@ -166,6 +166,72 @@ class TestRemove:
             lib.remove("nonexistent")
 
 
+class TestFindIdByHash:
+    def test_returns_id_for_matching_hash(self, tmp_path: Path):
+        lib = Library(tmp_path / "lib")
+        lib.init()
+        lib.write_record("rec001", _make_record(file_hash="deadbeef"))
+        assert lib.find_id_by_hash("deadbeef") == "rec001"
+
+    def test_returns_none_for_unknown_hash(self, tmp_path: Path):
+        lib = Library(tmp_path / "lib")
+        lib.init()
+        lib.write_record("rec001", _make_record(file_hash="deadbeef"))
+        assert lib.find_id_by_hash("zzzzzz") is None
+
+    def test_returns_none_when_library_empty(self, tmp_path: Path):
+        lib = Library(tmp_path / "lib")
+        lib.init()
+        assert lib.find_id_by_hash("anything") is None
+
+
+class TestCopyBundleTo:
+    def _seed(self, lib: Library, rid: str, file_hash: str = "h1") -> None:
+        lib.write_record(rid, _make_record(file_hash=file_hash, new_filename=f"{rid}.pdf"))
+        doc = lib.entry_dir(rid) / f"{rid}.pdf"
+        doc.write_text("document bytes")
+        lib.text_path(rid).write_text("# extracted")
+        lib.artifacts_dir(rid).mkdir()
+        (lib.artifacts_dir(rid) / "img.png").write_bytes(b"x")
+
+    def test_copies_full_bundle(self, tmp_path: Path):
+        src_lib = Library(tmp_path / "src")
+        src_lib.init()
+        dst_lib = Library(tmp_path / "dst")
+        dst_lib.init()
+        self._seed(src_lib, "rec001")
+
+        dest = src_lib.copy_bundle_to("rec001", dst_lib)
+        assert dest == dst_lib.entry_dir("rec001")
+        assert dst_lib.read_record("rec001")["title"] == "Test Record"
+        assert (dst_lib.entry_dir("rec001") / "rec001.pdf").read_text() == "document bytes"
+        assert dst_lib.text_path("rec001").read_text() == "# extracted"
+        assert (dst_lib.artifacts_dir("rec001") / "img.png").read_bytes() == b"x"
+
+    def test_overwrites_existing_target(self, tmp_path: Path):
+        src_lib = Library(tmp_path / "src")
+        src_lib.init()
+        dst_lib = Library(tmp_path / "dst")
+        dst_lib.init()
+        self._seed(src_lib, "rec001", file_hash="newhash")
+        # Pre-existing stale bundle at the same id in the target.
+        dst_lib.write_record("rec001", _make_record(file_hash="stale"))
+        (dst_lib.entry_dir("rec001") / "stray.txt").write_text("leftover")
+
+        src_lib.copy_bundle_to("rec001", dst_lib)
+        assert dst_lib.read_record("rec001")[PROVENANCE_KEY]["file_hash"] == "newhash"
+        # Clean replace, not a merge: the stray file is gone.
+        assert not (dst_lib.entry_dir("rec001") / "stray.txt").exists()
+
+    def test_missing_source_raises(self, tmp_path: Path):
+        src_lib = Library(tmp_path / "src")
+        src_lib.init()
+        dst_lib = Library(tmp_path / "dst")
+        dst_lib.init()
+        with pytest.raises(FileNotFoundError):
+            src_lib.copy_bundle_to("nonexistent", dst_lib)
+
+
 class TestExtractedText:
     def test_clear_text_removes_markdown_and_artifacts_only(self, tmp_path: Path):
         lib = Library(tmp_path / "lib")

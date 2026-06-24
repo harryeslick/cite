@@ -299,9 +299,15 @@ def validate(type: str, csl: str) -> str:
 
 
 @mcp.tool(name="list")
-def list_refs(library: str | None = None, full: bool = False) -> str:
-    """List references in the library (summaries, or full records with `full`)."""
-    lib = ops.resolve_library(_path(library))
+def list_refs(library: str | None = None, full: bool = False, central: bool = False) -> str:
+    """List references in the library (summaries, or full records with `full`).
+
+    Pass central=True to list the central ~/.cite/ library instead of the project library.
+    """
+    if central:
+        lib = ops.resolve_central()
+    else:
+        lib = ops.resolve_library(_path(library))
     return _ok(ops.library_view(lib, full=full))
 
 
@@ -356,11 +362,32 @@ def update(
 
 
 @mcp.tool()
-def remove(id: str, delete_file: bool = False, library: str | None = None) -> str:
-    """Remove a record (and optionally its stored file)."""
-    # `delete_file` is a legacy no-op (removal is all-or-nothing); accepted for
-    # backward compatibility, ignored by ops.remove.
+def pull(id: str, library: str | None = None) -> str:
+    """Copy a reference from the central ~/.cite/ library into the project library.
+
+    Browse the central library with list(central=True), pick an id, and pull it.
+    The copy is full and independent — the project stays self-contained. Returns
+    status 'not_found' if absent centrally, 'duplicate' if the same file is already
+    in the project library.
+    """
     lib = ops.resolve_library(_path(library))
+    err = ops.require_initialized(lib)
+    if err is not None:
+        return _ok(err)
+    return _ok(ops.pull(lib, id))
+
+
+@mcp.tool()
+def remove(id: str, delete_file: bool = False, library: str | None = None, central: bool = False) -> str:
+    """Remove a record (and optionally its stored file).
+
+    Pass central=True to remove from the central ~/.cite/ library instead.
+    Project removal does NOT affect the central library.
+    """
+    if central:
+        lib = ops.resolve_central()
+    else:
+        lib = ops.resolve_library(_path(library))
     return _ok(ops.remove(lib, id))
 
 

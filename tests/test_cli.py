@@ -10,9 +10,15 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from cite import ops
 from cite.cli import app
 
 runner = CliRunner()
+
+
+def _central_lib():
+    """The central library handle (redirected by the isolate_central fixture)."""
+    return ops.resolve_central()
 
 
 def _run(args, input=None):
@@ -361,3 +367,257 @@ def test_update_with_no_changes_is_an_error(tmp_path):
     out = _run(["update", rid, "--library", lib])
     assert out["status"] == "error"
     assert "no changes" in out["message"]
+
+
+# --------------------------------------------------------------------------- #
+# Central library — smart add + auto-sync (U3)
+# --------------------------------------------------------------------------- #
+
+
+def test_add_auto_syncs_to_central(tmp_path):
+    """AE2/AE3: a normal add creates the central library and copies the bundle in."""
+    lib = _new_lib(tmp_path)
+    central = _central_lib()
+    assert not central.is_initialized()  # nothing yet
+
+    added = _add_basic(tmp_path, lib)
+    assert added["status"] == "added"
+    assert "source" not in added  # normal pipeline, not a central import
+
+    # Central was auto-created and now holds the same bundle.
+    assert central.is_initialized()
+    stem = added["id"].split(":", 1)[1]
+    assert central.entry_dir(stem).is_dir()
+    assert central.read_record(stem)["title"] == "Annual Report"
+
+
+def test_add_imports_from_central_without_search(tmp_path, monkeypatch):
+    """AE1: adding bytes already in central imports the bundle, skipping the pipeline."""
+    # First add into project A populates central.
+    lib_a = _new_lib(tmp_path, name="proj_a")
+    file = _sample_file(tmp_path)
+    first = _run([
+        "add", str(file), "--manual", "--type", "other-report",
+        "--field", "title=Shared Work",
+        "--field", "publisher=Agency",
+        "--field", "issued=2021",
+        "--library", lib_a,
+    ])
+    assert first["status"] == "added"
+
+    # Second add of the SAME bytes into project B: a DOI add would normally call
+    # the search backend. Make search explode so a hit on central is provable —
+    # if smart-add works, search is never reached.
+    def _boom(**kwargs):
+        raise AssertionError("search must not run on a central hit")
+
+    monkeypatch.setattr("cite.ops.run_search", _boom)
+
+    lib_b = _new_lib(tmp_path, name="proj_b")
+    second = _run([
+        "add", str(file), "--doi", "10.1/whatever", "--library", lib_b,
+    ])
+    assert second["status"] == "added"
+    assert second["source"] == "central"
+    assert second["id"] == first["id"]
+    # The bundle really landed in project B.
+    stem = second["id"].split(":", 1)[1]
+    assert (Path(lib_b) / stem).is_dir()
+
+
+def test_add_url_html_syncs_to_central(tmp_path, monkeypatch):
+    """U3 scenario 5: the add-url HTML path also auto-syncs to central."""
+    import cite.web as web
+
+    class _Fetched:
+        final_url = "https://example.org/page"
+        content_type = "text/html"
+        body = b"<html><head><title>Example Page</title></head><body>hi</body></html>"
+        text = body.decode()
+
+    monkeypatch.setattr(web, "fetch_url", lambda url: _Fetched())
+    monkeypatch.setattr(web, "is_pdf", lambda f: False)
+    monkeypatch.setattr(web, "is_html", lambda f: True)
+    monkeypatch.setattr(
+        web, "parse_webpage_metadata",
+        lambda text, url: {"title": "Example Page", "URL": url, "type": "webpage"},
+    )
+
+    lib = _new_lib(tmp_path)
+    out = _run(["add-url", "https://example.org/page", "--library", lib])
+    assert out["status"] == "added"
+
+    central = _central_lib()
+    stem = out["id"].split(":", 1)[1]
+    assert central.entry_dir(stem).is_dir()
+
+
+def test_add_into_central_directly_is_noop_sync(tmp_path, monkeypatch):
+    """AE7: when the project library IS the central library, sync is a no-op."""
+    central = _central_lib()
+    central.init()
+    # Point --library at the central path itself.
+    out = _run([
+        "add", str(_sample_file(tmp_path)), "--manual", "--type", "other-report",
+        "--field", "title=Direct Add",
+        "--field", "publisher=Agency",
+        "--field", "issued=2020",
+        "--library", str(central.root),
+    ])
+    assert out["status"] == "added"
+    assert "source" not in out  # not imported from itself
+    stem = out["id"].split(":", 1)[1]
+    # Exactly one bundle on disk (no self-copy duplicate).
+    assert central.entry_dir(stem).is_dir()
+
+
+# --------------------------------------------------------------------------- #
+# Pull from central (U4)
+# --------------------------------------------------------------------------- #
+
+
+def test_pull_copies_from_central_to_project(tmp_path):
+    """AE4: pull an existing central reference into a project."""
+    lib_a = _new_lib(tmp_path, name="proj_a")
+    added = _add_basic(tmp_path, lib_a)
+    rid = added["id"]
+
+    lib_b = _new_lib(tmp_path, name="proj_b")
+    out = _run(["pull", rid, "--library", lib_b])
+    assert out["status"] == "pulled"
+    assert out["id"] == rid
+    # Bundle really landed in project B.
+    stem = rid.split(":", 1)[1]
+    assert (Path(lib_b) / stem / f"{stem}.json").exists()
+
+
+def test_pull_not_found_when_absent(tmp_path):
+    lib = _new_lib(tmp_path)
+    # Central is empty (auto-create hasn't fired), so init it manually.
+    _central_lib().init()
+    out = _run(["pull", "nonexistent", "--library", lib])
+    assert out["status"] == "not_found"
+
+
+def test_pull_duplicate_when_already_in_project(tmp_path):
+    lib = _new_lib(tmp_path)
+    added = _add_basic(tmp_path, lib)
+    # The same bundle is now in both project and central.
+    out = _run(["pull", added["id"], "--library", lib])
+    assert out["status"] == "duplicate"
+
+
+def test_pull_accepts_bare_and_namespaced_id(tmp_path):
+    lib_a = _new_lib(tmp_path, name="proj_a")
+    added = _add_basic(tmp_path, lib_a)
+    bare = added["id"].split(":", 1)[1]
+
+    lib_b = _new_lib(tmp_path, name="proj_b")
+    out = _run(["pull", bare, "--library", lib_b])
+    assert out["status"] == "pulled"
+
+
+# --------------------------------------------------------------------------- #
+# Update sync to central (U5)
+# --------------------------------------------------------------------------- #
+
+
+def test_update_syncs_metadata_to_central(tmp_path):
+    """AE5: update in project propagates to central."""
+    lib = _new_lib(tmp_path)
+    added = _add_basic(tmp_path, lib)
+    rid = added["id"]
+
+    out = _run(["update", rid, "--field", "publisher=New Agency", "--library", lib])
+    assert out["status"] == "updated"
+
+    central = _central_lib()
+    stem = out["id"].split(":", 1)[1]
+    central_record = central.read_record(stem)
+    assert central_record["publisher"] == "New Agency"
+
+
+def test_update_title_restems_central_bundle(tmp_path):
+    lib = _new_lib(tmp_path)
+    added = _add_basic(tmp_path, lib, title="Old Title")
+    old_stem = added["id"].split(":", 1)[1]
+
+    out = _run(["update", added["id"], "--field", "title=Brand New Title", "--library", lib])
+    assert out["status"] == "updated"
+    assert out["renamed"] is True
+    new_stem = out["id"].split(":", 1)[1]
+
+    central = _central_lib()
+    # Old central bundle gone, new one present with updated metadata.
+    assert not central.entry_dir(old_stem).is_dir()
+    assert central.entry_dir(new_stem).is_dir()
+    assert central.read_record(new_stem)["title"] == "Brand New Title"
+
+
+def test_update_when_not_in_central_is_silent(tmp_path):
+    """Update a reference that only exists in the project (no central copy)."""
+    lib = _new_lib(tmp_path)
+    # Add directly to lib without central being initialized.
+    central = _central_lib()
+    assert not central.is_initialized()
+    added = _add_basic(tmp_path, lib)
+
+    # Central is now initialized (auto-create on add). Remove the central copy
+    # to simulate a reference that was never in central.
+    stem = added["id"].split(":", 1)[1]
+    central.remove(stem)
+
+    out = _run(["update", added["id"], "--field", "publisher=X", "--library", lib])
+    assert out["status"] == "updated"
+    # No crash — the update succeeds even though central has no copy.
+
+
+# --------------------------------------------------------------------------- #
+# Browse and remove central (U6)
+# --------------------------------------------------------------------------- #
+
+
+def test_list_central_shows_central_library(tmp_path):
+    """R14: cite list --central lists the central library."""
+    lib = _new_lib(tmp_path)
+    _add_basic(tmp_path, lib, title="Annual Report")
+    _add_report(
+        _other_file(tmp_path), lib,
+        title="Quantum Computing Fundamentals", author="Lee, Kim", year=2023,
+    )
+
+    out = _run(["list", "--central"])
+    assert out["count"] == 2
+    titles = {r["title"] for r in out["references"]}
+    assert "Annual Report" in titles
+    assert "Quantum Computing Fundamentals" in titles
+
+
+def test_remove_is_project_local(tmp_path):
+    """AE6: remove in project does not affect central."""
+    lib = _new_lib(tmp_path)
+    added = _add_basic(tmp_path, lib)
+    rid = added["id"]
+    stem = rid.split(":", 1)[1]
+
+    _run(["remove", rid, "--library", lib])
+    # Project bundle is gone.
+    assert not (Path(lib) / stem).exists()
+    # Central bundle is still there.
+    central = _central_lib()
+    assert central.entry_dir(stem).is_dir()
+
+
+def test_remove_central_flag(tmp_path):
+    """R15: cite remove --central removes from central only."""
+    lib = _new_lib(tmp_path)
+    added = _add_basic(tmp_path, lib)
+    rid = added["id"]
+    stem = rid.split(":", 1)[1]
+
+    _run(["remove", rid, "--central"])
+    # Central bundle is gone.
+    central = _central_lib()
+    assert not central.entry_dir(stem).is_dir()
+    # Project bundle is still there.
+    assert (Path(lib) / stem / f"{stem}.json").exists()

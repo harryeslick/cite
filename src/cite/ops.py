@@ -73,6 +73,91 @@ def resolve_library(library: Path | None) -> Library:
     return Library(library)
 
 
+# The central library is a single, hardcoded per-user location — no env var, no
+# config (a single-user tool; configurability would add indirection without
+# benefit). It's an invisible accelerator: every add anywhere is copied here, and
+# a later add of the same bytes in any project imports from here instead of
+# re-running the search/validate/extract pipeline.
+CENTRAL_PATH = Path.home() / ".cite"
+
+
+def resolve_central() -> Library:
+    """Return the central library handle (may not yet be initialized)."""
+    return Library(CENTRAL_PATH)
+
+
+def ensure_central() -> Library:
+    """Return the central library, creating ``cite.toml`` if it doesn't exist yet.
+
+    Auto-create is intentional here (unlike project libraries, which require an
+    explicit ``cite init``): the central library is implicit infrastructure that
+    bootstraps on the first successful add anywhere.
+    """
+    central = resolve_central()
+    if not central.is_initialized():
+        central.init()
+    return central
+
+
+def _is_central(lib: Library) -> bool:
+    """True when ``lib`` resolves to the same directory as the central library.
+
+    The degenerate case (e.g. ``$CITE_LIBRARY=~/.cite``): smart-add and auto-sync
+    must be no-ops here, or a project would import from / sync to itself.
+    """
+    return resolve_central().root.resolve() == lib.root.resolve()
+
+
+def _try_import_from_central(lib: Library, file: Path) -> dict | None:
+    """If ``file``'s bytes are already in central, copy that bundle into ``lib``.
+
+    The smart-add accelerator (R6/R7): checked before each add runs its
+    search/validate/extract pipeline. Returns an ``added`` envelope with
+    ``source: "central"`` on a hit, or ``None`` (no hit / central absent / central
+    is this library) so the caller falls through to the normal pipeline.
+    """
+    central = resolve_central()
+    if not central.is_initialized() or _is_central(lib):
+        return None
+    file_hash = content_hash(file)
+    # If the project already holds these bytes, defer to commit_file's exact-bytes
+    # duplicate gate — smart-add only fires on a project miss + central hit.
+    if lib.find_by_hash(file_hash) is not None:
+        return None
+    existing = central.find_by_hash(file_hash)
+    if existing is None:
+        return None
+
+    prov = existing.get(PROVENANCE_KEY, {})
+    rid = prov.get("new_filename", "").rsplit(".", 1)[0]
+    central.copy_bundle_to(rid, lib)
+    record = lib.read_record(rid)
+    extraction = prov.get("extraction") or {}
+    return {
+        "status": "added",
+        "source": "central",
+        "id": namespaced_id(rid),
+        "new_filename": prov.get("new_filename"),
+        "cite_type": prov.get("cite_type"),
+        "extracted": bool(extraction),
+        "markdown_path": extraction.get("markdown_path"),
+        "record": record,
+    }
+
+
+def _sync_to_central(lib: Library, record_id: str) -> None:
+    """Copy a freshly committed bundle into the central library (R4/R5).
+
+    Auto-create on first use (``ensure_central``), then a clean bundle copy —
+    idempotent, overwriting any prior central copy with the latest metadata. No-op
+    when ``lib`` *is* the central library.
+    """
+    if _is_central(lib):
+        return
+    central = ensure_central()
+    lib.copy_bundle_to(record_id, central)
+
+
 def require_initialized(lib: Library) -> dict | None:
     """Return an error envelope if ``lib`` isn't a real library yet, else None.
 
@@ -285,6 +370,11 @@ def commit_file(
     record[PROVENANCE_KEY] = prov_dict
     lib.write_record(rid, record)
 
+    # 6. Auto-sync: every successful add anywhere is copied to the central library
+    # (auto-creating it on first use). All four add paths funnel through here, so
+    # they inherit this with no per-path wiring.
+    _sync_to_central(lib, rid)
+
     return {
         "status": "added",
         "id": namespaced_id(rid),
@@ -308,6 +398,9 @@ def add_by_doi(
 
     Returns ``not_found`` if no DB match (the agent falls back to manual).
     """
+    imported = _try_import_from_central(lib, file)
+    if imported is not None:
+        return imported
     result = run_search(doi=doi)
     if result["status"] != "ok":
         return {
@@ -330,6 +423,9 @@ def add_from_csl(
     lib: Library, file: Path, record: dict, *, force: bool = False
 ) -> dict:
     """Add a file using a caller-supplied CSL-JSON record (e.g. a search candidate)."""
+    imported = _try_import_from_central(lib, file)
+    if imported is not None:
+        return imported
     source = record.get("source", "manual")
     source_id = record.get("source_id") or record.get("DOI")
     cite_type = record.get("_cite_type") or cite_type_from_csl(
@@ -351,6 +447,9 @@ def add_manual(
 ) -> dict:
     """Build a record from --field values and add it. Raises ``ValueError`` on a
     bad cite_type / field (the shell surfaces it as an error envelope)."""
+    imported = _try_import_from_central(lib, file)
+    if imported is not None:
+        return imported
     record = record_from_fields(cite_type, fields)
     return commit_file(
         lib, file, record, cite_type,
@@ -397,6 +496,9 @@ def add_url(lib: Library, url: str, *, force: bool = False) -> dict:
         name = slugify(fetched.final_url, max_length=60) or "webpage"
         snapshot = tmpdir / f"{name}.html"
         snapshot.write_bytes(fetched.body)
+        imported = _try_import_from_central(lib, snapshot)
+        if imported is not None:
+            return imported
         return commit_file(
             lib, snapshot, record, "web-site",
             source="web", source_id=fetched.final_url, force=force,
@@ -600,6 +702,45 @@ def get(lib: Library, id: str) -> dict:
         return {"status": "not_found", "id": namespaced_id(stem)}
 
 
+def pull(lib: Library, id: str) -> dict:
+    """Copy a reference from the central library into ``lib``.
+
+    The explicit cross-project reuse path: the user browses central (``list
+    --central``), picks an id, and pulls it into the current project. The bundle
+    is a full, independent copy — no ongoing link. Returns ``not_found`` when the
+    id is absent centrally, ``duplicate`` when the project already has those bytes.
+    """
+    central = resolve_central()
+    if not central.is_initialized():
+        return {
+            "status": "error",
+            "message": "no central library at ~/.cite/ (nothing has been added yet)",
+        }
+    stem = local_id(id)
+    try:
+        central_record = central.read_record(stem)
+    except FileNotFoundError:
+        return {"status": "not_found", "id": namespaced_id(stem)}
+
+    prov = central_record.get(PROVENANCE_KEY, {})
+    file_hash = prov.get("file_hash")
+    if file_hash and lib.find_by_hash(file_hash):
+        return {
+            "status": "duplicate",
+            "id": namespaced_id(stem),
+            "message": "same file already in project library",
+        }
+
+    central.copy_bundle_to(stem, lib)
+    return {
+        "status": "pulled",
+        "id": namespaced_id(stem),
+        "cite_type": prov.get("cite_type"),
+        "new_filename": prov.get("new_filename"),
+        "record": central_record,
+    }
+
+
 def remove(lib: Library, id: str) -> dict:
     """Remove a reference bundle (record + file + extracted artifacts), all-or-nothing."""
     stem = local_id(id)
@@ -608,6 +749,47 @@ def remove(lib: Library, id: str) -> dict:
         return {"status": "removed", "id": namespaced_id(stem), "deleted_file": True}
     except FileNotFoundError:
         return {"status": "not_found", "id": namespaced_id(stem)}
+
+
+def pull(lib: Library, id: str) -> dict:
+    """Copy a reference bundle from the central library into ``lib`` (R9–R11).
+
+    The explicit counterpart to smart-add: imports a known central reference by id.
+    Returns ``error`` if central isn't initialized, ``not_found`` if the id isn't in
+    central, ``duplicate`` if these bytes are already filed in the project (matched
+    by content hash, so a differently-named project copy still counts), else
+    ``pulled`` after a full, independent bundle copy.
+    """
+    central = resolve_central()
+    if not central.is_initialized():
+        return {
+            "status": "error",
+            "message": f"no central library at '{central.root}' yet",
+            "hint": "the central library is created on the first `cite add` anywhere",
+        }
+
+    stem = local_id(id)
+    try:
+        record = central.read_record(stem)
+    except FileNotFoundError:
+        return {"status": "not_found", "id": namespaced_id(stem)}
+
+    prov = record.get(PROVENANCE_KEY, {})
+    file_hash = prov.get("file_hash")
+    if file_hash and lib.find_by_hash(file_hash) is not None:
+        return {
+            "status": "duplicate",
+            "message": "identical content already in this project library",
+            "id": namespaced_id(stem),
+        }
+
+    central.copy_bundle_to(stem, lib)
+    return {
+        "status": "pulled",
+        "id": namespaced_id(stem),
+        "new_filename": prov.get("new_filename"),
+        "cite_type": prov.get("cite_type"),
+    }
 
 
 def update(
@@ -695,6 +877,19 @@ def update(
 
     record[PROVENANCE_KEY] = prov
     lib.write_record(new_stem, record)
+
+    # Sync the updated metadata to central so a later pull delivers the corrected
+    # version. Find the central copy by content hash (invariant across renames),
+    # remove the old bundle, and copy the fresh project bundle over.
+    full_hash = prov.get("file_hash")
+    if full_hash:
+        central = resolve_central()
+        if central.is_initialized() and not _is_central(lib):
+            old_central_id = central.find_id_by_hash(full_hash)
+            if old_central_id is not None:
+                if old_central_id != new_stem:
+                    central.remove(old_central_id)
+                lib.copy_bundle_to(new_stem, central)
 
     return {
         "status": "updated",
