@@ -31,6 +31,7 @@ def _add_ref(tmp_path: Path) -> tuple[str, str]:
     f = tmp_path / "report.pdf"
     f.write_text("internal report contents")
     lib = str(tmp_path / "lib")
+    _run(["init", "--library", lib, "--yes"])
     added = _run([
         "add", str(f), "--manual", "--type", "other-report",
         "--field", "title=Annual Report",
