@@ -159,6 +159,65 @@ def test_extract_graceful_degradation_when_docling_absent(tmp_path, monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
+# Standalone extraction (no library)
+# --------------------------------------------------------------------------- #
+
+
+def test_extract_file_standalone(tmp_path, monkeypatch):
+    src = tmp_path / "report.pdf"
+    src.write_text("fake pdf contents")
+    monkeypatch.setattr(extract_pkg, "extract_to_markdown", _fake_extractor(n_images=2))
+
+    out = _run(["extract", str(src)])
+    assert out["status"] == "ok"
+    assert "id" not in out
+    assert out["source"] == str(src.resolve())
+    assert out["markdown_path"] == str((tmp_path / "report.md").resolve())
+    assert out["n_images"] == 2
+
+    assert (tmp_path / "report.md").exists()
+    assert (tmp_path / "report_artifacts").is_dir()
+    assert len(list((tmp_path / "report_artifacts").iterdir())) == 2
+
+
+def test_extract_file_standalone_idempotent(tmp_path, monkeypatch):
+    src = tmp_path / "paper.pdf"
+    src.write_text("fake pdf")
+
+    monkeypatch.setattr(extract_pkg, "extract_to_markdown", _fake_extractor(n_images=3))
+    _run(["extract", str(src)])
+    assert len(list((tmp_path / "paper_artifacts").iterdir())) == 3
+
+    monkeypatch.setattr(extract_pkg, "extract_to_markdown", _fake_extractor(n_images=1))
+    out = _run(["extract", str(src)])
+    assert out["n_images"] == 1
+    assert len(list((tmp_path / "paper_artifacts").iterdir())) == 1
+
+
+def test_extract_file_standalone_missing(tmp_path):
+    result = runner.invoke(app, ["extract", str(tmp_path / "nonexistent.pdf")])
+    assert result.exit_code != 0
+    out = json.loads(result.output)
+    assert out["status"] == "error"
+    assert "not found" in out["message"]
+
+
+def test_extract_file_standalone_no_extractor(tmp_path, monkeypatch):
+    src = tmp_path / "doc.pdf"
+    src.write_text("fake pdf")
+
+    def _unavailable(*a, **k):
+        raise ExtractorUnavailable("the 'extract' extra is required")
+
+    monkeypatch.setattr(extract_pkg, "extract_to_markdown", _unavailable)
+    result = runner.invoke(app, ["extract", str(src)])
+    assert result.exit_code != 0
+    out = json.loads(result.output)
+    assert out["status"] == "error"
+    assert "extract" in out["hint"]
+
+
+# --------------------------------------------------------------------------- #
 # Real docling pipeline — slow, network on first run (model download), skipped
 # when the optional `extract` extra is not installed.
 # --------------------------------------------------------------------------- #

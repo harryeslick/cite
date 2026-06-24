@@ -964,6 +964,45 @@ def extract(
     }
 
 
+def extract_file(
+    src: Path, *, vlm_model: str = "granite_docling"
+) -> dict:
+    """Extract a standalone file to markdown without a cite library.
+
+    Writes ``<stem>.md`` + ``<stem>_artifacts/`` beside the input file.
+    No library, record, or provenance involved — just file in, markdown out.
+    """
+    from cite.extract import ExtractorUnavailable, extract_to_markdown
+
+    if not src.exists():
+        return {"status": "error", "message": f"file not found: {src}"}
+
+    md_path = src.parent / f"{src.stem}.md"
+    artifacts_dir = src.parent / f"{src.stem}_artifacts"
+
+    if md_path.exists():
+        md_path.unlink()
+    if artifacts_dir.is_dir():
+        shutil.rmtree(artifacts_dir)
+
+    try:
+        result = extract_to_markdown(src, md_path, vlm_model=vlm_model)
+    except ExtractorUnavailable as e:
+        return {"status": "error", "message": str(e), "hint": "install cite[extract]"}
+    except Exception as e:
+        return {"status": "error", "message": f"extraction failed: {e}"}
+
+    return {
+        "status": "ok",
+        "source": str(src.resolve()),
+        "markdown_path": str(md_path.resolve()),
+        "artifacts_dir": str(artifacts_dir.resolve()),
+        "n_images": result["n_images"],
+        "extractor": result["extractor"],
+        "extractor_version": result["extractor_version"],
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Read / view operations (list, text, export)
 # --------------------------------------------------------------------------- #

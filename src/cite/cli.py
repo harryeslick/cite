@@ -442,25 +442,36 @@ def remove(
 
 @app.command()
 def extract(
-    id: str = typer.Argument(..., help="Record id; bare stem or namespaced (cite:<stem>)."),
+    id: str = typer.Argument(
+        ..., help="Record id (cite:<stem> or bare stem), or a file path for standalone extraction."
+    ),
     vlm_model: str = typer.Option(
         "granite_docling", help="Docling VLM model preset to use."
     ),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
-    """Extract full markdown for a stored reference using a local Docling VLM.
+    """Extract full markdown for a document using a local Docling VLM.
 
     Optional feature — requires the ``extract`` extra (`uv tool install
-    'cite[extract]'`). All processing is local/private. The markdown and its
+    'cite[extract]'`). All processing is local/private.
+
+    **Library mode** (default when ``id`` is a record id): the markdown and its
     referenced images are written into the reference's bundle as
     ``<id>/<id>.md`` + ``<id>/<id>_artifacts/``; re-running overwrites prior
     output. The extractor name + version are recorded under
     ``_provenance.extraction`` so a stale extraction is detectable later.
+
+    **Standalone mode** (when ``id`` is a path to an existing file): no library
+    is needed. The markdown and artifacts are written beside the input file as
+    ``<stem>.md`` + ``<stem>_artifacts/``.
     """
-    lib = _resolve_library(library)
-    result = ops.extract(lib, id, vlm_model=vlm_model)
+    candidate = Path(id)
+    if candidate.suffix:
+        result = ops.extract_file(candidate, vlm_model=vlm_model)
+    else:
+        lib = _resolve_library(library)
+        result = ops.extract(lib, id, vlm_model=vlm_model)
     _emit(result)
-    # `not_found` is exit 0 (a normal branch); a real failure to extract is exit 1.
     if result.get("status") == "error":
         raise typer.Exit(code=1)
 

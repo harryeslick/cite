@@ -56,6 +56,8 @@ prints one JSON object with a `status` field — read it and follow
   VLM); output goes to `<id>/<id>.md` (+ `<id>_artifacts/`). Needs the `extract`
   extra — on `status: error` with an install hint, tell the user to install
   `cite[extract]`; never treat its absence as a failure of the core workflow.
+- `cite extract <file>` also works without a library: pass a file path instead of
+  an id and output goes beside the input file as `<stem>.md` (+ `<stem>_artifacts/`).
 - `cite text <id> [--path-only]` prints the extracted markdown (or its path).
 
 See `README.md` for the full command reference.

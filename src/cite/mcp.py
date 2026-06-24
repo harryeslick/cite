@@ -405,12 +405,17 @@ def export(format: str = "csl", library: str | None = None) -> str:
 def extract(
     id: str, vlm_model: str = "granite_docling", library: str | None = None
 ) -> str:
-    """Extract full markdown for a stored reference via a local Docling VLM.
+    """Extract full markdown for a document via a local Docling VLM.
 
-    Optional feature: needs the `extract` extra on the cite install. Stores the
-    markdown + referenced images in the reference's bundle and records the
-    extractor/version in `_provenance.extraction`. Returns status 'error' with an
-    install hint if docling isn't available.
+    Optional feature: needs the `extract` extra on the cite install.
+
+    **Library mode** (when `id` is a record id): stores the markdown + referenced
+    images in the reference's bundle and records the extractor/version in
+    `_provenance.extraction`. Returns status 'error' with an install hint if
+    docling isn't available.
+
+    **Standalone mode** (when `id` is a path to an existing file): no library
+    needed. Output markdown + artifacts are written beside the input file.
 
     Long-running: a vision model runs over the whole document and can take
     minutes. This MCP call blocks until it finishes and cannot be backgrounded
@@ -418,6 +423,11 @@ def extract(
     fire-and-forget, run the `cite extract <id>` CLI as a background process
     instead and poll `cite text <id> --path-only` for completion.
     """
+    from pathlib import Path as _Path
+
+    candidate = _Path(id)
+    if candidate.suffix:
+        return _ok(ops.extract_file(candidate, vlm_model=vlm_model))
     lib = ops.resolve_library(_path(library))
     return _ok(ops.extract(lib, id, vlm_model=vlm_model))
 
