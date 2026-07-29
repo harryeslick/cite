@@ -65,12 +65,51 @@ _HELPER_KEYS = ("source", "source_id", "_cite_type")
 # --------------------------------------------------------------------------- #
 
 
+# The conventional name for a library that sits *beside* the project root, as
+# opposed to the project root itself being the library.
+_LIBRARY_DIRNAME = "library"
+
+
 def resolve_library(library: Path | None) -> Library:
-    """Resolve the library root: explicit --library, else $CITE_LIBRARY, else ./library."""
-    if library is None:
-        env = os.environ.get("CITE_LIBRARY")
-        library = Path(env) if env else Path("library")
-    return Library(library)
+    """Resolve the library root: explicit ``--library``, else ``$CITE_LIBRARY``, else search.
+
+    An explicitly named root — the ``--library`` flag or ``$CITE_LIBRARY`` — is
+    taken literally and never searched from. The caller named a path; silently
+    using a different one would be worse than failing on the one they meant.
+
+    With neither, walk *up* from the current directory looking for the
+    ``cite.toml`` marker, testing each ancestor both as a library itself and as
+    the parent of a ``library/`` sibling. This is the git-style lookup, and it
+    exists because the old behaviour — a bare relative ``Path("library")`` — was
+    silently wrong from every subdirectory of a project: ``cd library && cite
+    doctor`` resolved ``library/library``, found nothing, and reported a healthy
+    empty library rather than an error.
+
+    When the search finds nothing the returned Library still points at
+    ``./library`` (so messages have a concrete path to name), but carries
+    ``origin`` and ``searched_from`` so :func:`require_initialized` can explain
+    itself.
+    """
+    if library is not None:
+        return Library(library, origin="--library")
+
+    env = os.environ.get("CITE_LIBRARY")
+    if env:
+        return Library(Path(env), origin="$CITE_LIBRARY")
+
+    start = Path.cwd()
+    for directory in [start, *start.parents]:
+        for candidate in (directory, directory / _LIBRARY_DIRNAME):
+            if (candidate / "cite.toml").exists():
+                return Library(
+                    candidate, origin="found cite.toml", searched_from=start
+                )
+
+    return Library(
+        Path(_LIBRARY_DIRNAME),
+        origin="no cite.toml found; fell back to ./library",
+        searched_from=start,
+    )
 
 
 # The central library is a single, hardcoded per-user location — no env var, no
@@ -159,19 +198,36 @@ def _sync_to_central(lib: Library, record_id: str) -> None:
 
 
 def require_initialized(lib: Library) -> dict | None:
-    """Return an error envelope if ``lib`` isn't a real library yet, else None.
+    """Return a ``no_library`` envelope if ``lib`` isn't a real library, else None.
 
     ``cite.toml`` is the sole marker of an initialized library; creating one is a
     deliberate act reserved for ``init`` (never implicit on add). The shell emits
     the returned dict and stops; ``None`` means "proceed".
+
+    Every command that touches a library calls this — readers included. A read
+    against a non-existent root used to succeed with an empty result, which made
+    "you are pointed at the wrong directory" indistinguishable from "the library
+    is empty". The envelope reports how the root was chosen (``origin``) and,
+    when it was searched for, where the search began, so the fix is obvious from
+    the error alone.
     """
-    if not lib.is_initialized():
-        return {
-            "status": "error",
-            "message": f"no cite library at '{lib.root}' (missing cite.toml)",
-            "hint": f"run: cite init --library {lib.root}",
-        }
-    return None
+    if lib.is_initialized():
+        return None
+
+    envelope = {
+        "status": "no_library",
+        "message": f"no cite library at '{lib.root}' (missing cite.toml)",
+        "origin": lib.origin,
+        "hint": (
+            f"pass --library <path>, set $CITE_LIBRARY, or create one with "
+            f"`cite init --library {lib.root}`"
+        ),
+    }
+    if lib.searched_from is not None:
+        envelope["searched"] = (
+            f"no cite.toml in '{lib.searched_from}' or any parent directory"
+        )
+    return envelope
 
 
 def _now_iso() -> str:
@@ -577,12 +633,14 @@ def prepare(
     file: Path,
     *,
     head_chars: int = 2000,
+    engine: str = "auto",
     vlm_model: str = "granite_docling",
 ) -> dict:
     """Extract a file's full markdown *before* adding it, for better citation context.
 
-    Runs the local Docling VLM once, caches the markdown under the file's content
-    hash in ``<library>/.staging/<hash>/``, and returns the markdown *head* plus any
+    Runs the local Docling pipeline once (engine chosen per :func:`extract`),
+    caches the markdown under the file's content hash in
+    ``<library>/.staging/<hash>/``, and returns the markdown *head* plus any
     DOI / title it can read. Returns ``duplicate`` if already filed,
     ``extractor_unavailable`` if the extra isn't installed. A docling runtime crash
     propagates as a generic ``Exception`` for the shell to wrap.
@@ -610,7 +668,9 @@ def prepare(
         staged_md = lib.staging_text_path(full_hash)
         lib.clear_staged(full_hash)  # wipe any partial/stale staging first
         try:
-            result = extract_to_markdown(file, staged_md, vlm_model=vlm_model)
+            result = extract_to_markdown(
+                file, staged_md, engine=engine, vlm_model=vlm_model
+            )
         except ExtractorUnavailable:
             lib.clear_staged(full_hash)
             return {
@@ -627,6 +687,8 @@ def prepare(
         meta = {
             "extractor": result["extractor"],
             "extractor_version": result["extractor_version"],
+            "engine": result["engine"],
+            "probe": result["probe"],
             "vlm_model": result["vlm_model"],
             "image_export_mode": result["image_export_mode"],
             "extracted_at": _now_iso(),
@@ -662,6 +724,8 @@ def prepare(
         "head": head,
         "head_truncated": truncated,
         "n_images": meta.get("n_images", 0),
+        "engine": meta.get("engine"),
+        "probe": meta.get("probe"),
         "doi": doi,
         "title_guess": title_guess,
         "suggested_next": suggested_next,
@@ -903,15 +967,18 @@ def update(
 
 
 def extract(
-    lib: Library, id: str, *, vlm_model: str = "granite_docling"
+    lib: Library, id: str, *, engine: str = "auto", vlm_model: str = "granite_docling"
 ) -> dict:
-    """Extract full markdown for a stored reference using a local Docling VLM.
+    """Extract full markdown for a stored reference using a local Docling pipeline.
+
+    ``engine`` is ``"auto"`` (probe the document, use its text layer when it has
+    one and the VLM when it doesn't), or ``"text"`` / ``"vlm"`` to force one.
 
     Writes ``<id>/<id>.md`` + artifacts into the bundle and records the extractor
-    name/version under ``_provenance.extraction``. Returns ``not_found`` for an
-    unknown id, ``error`` for a missing source file or a docling failure (including
-    ``ExtractorUnavailable``). All non-``ok`` branches are returned dicts here; the
-    shell decides exit codes.
+    name/version and the engine used under ``_provenance.extraction``. Returns
+    ``not_found`` for an unknown id, ``error`` for a missing source file or a
+    docling failure (including ``ExtractorUnavailable``). All non-``ok`` branches
+    are returned dicts here; the shell decides exit codes.
     """
     from cite.extract import ExtractorUnavailable, extract_to_markdown
 
@@ -933,7 +1000,9 @@ def extract(
 
     lib.clear_text(stem)  # idempotent re-extract: wipe any prior output first
     try:
-        result = extract_to_markdown(src, lib.text_path(stem), vlm_model=vlm_model)
+        result = extract_to_markdown(
+            src, lib.text_path(stem), engine=engine, vlm_model=vlm_model
+        )
     except ExtractorUnavailable as e:
         return {"status": "error", "message": str(e), "hint": "install cite[extract]"}
     except Exception as e:  # docling runtime failure — surface, don't crash
@@ -943,6 +1012,8 @@ def extract(
     extraction = Extraction(
         extractor=result["extractor"],
         extractor_version=result["extractor_version"],
+        engine=result["engine"],
+        probe=result["probe"],
         vlm_model=result["vlm_model"],
         image_export_mode=result["image_export_mode"],
         extracted_at=_now_iso(),
@@ -961,11 +1032,13 @@ def extract(
         "n_images": result["n_images"],
         "extractor": result["extractor"],
         "extractor_version": result["extractor_version"],
+        "engine": result["engine"],
+        "probe": result["probe"],
     }
 
 
 def extract_file(
-    src: Path, *, vlm_model: str = "granite_docling"
+    src: Path, *, engine: str = "auto", vlm_model: str = "granite_docling"
 ) -> dict:
     """Extract a standalone file to markdown without a cite library.
 
@@ -986,7 +1059,7 @@ def extract_file(
         shutil.rmtree(artifacts_dir)
 
     try:
-        result = extract_to_markdown(src, md_path, vlm_model=vlm_model)
+        result = extract_to_markdown(src, md_path, engine=engine, vlm_model=vlm_model)
     except ExtractorUnavailable as e:
         return {"status": "error", "message": str(e), "hint": "install cite[extract]"}
     except Exception as e:
@@ -1000,6 +1073,8 @@ def extract_file(
         "n_images": result["n_images"],
         "extractor": result["extractor"],
         "extractor_version": result["extractor_version"],
+        "engine": result["engine"],
+        "probe": result["probe"],
     }
 
 

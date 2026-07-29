@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 
 from cite import ops
-from cite.doctor import run_doctor
+from cite.doctor import run_doctor, run_self_check
 from cite.guide import guide as build_guide
 from cite.models import SPEC_VERSION, CiteType
 from cite.search import search as run_search
@@ -125,6 +125,7 @@ def peek(file: str, max_pages: int = 5) -> str:
 def prepare(
     file: str,
     head_chars: int = 2000,
+    engine: str = "auto",
     vlm_model: str = "granite_docling",
     library: str | None = None,
 ) -> str:
@@ -133,19 +134,20 @@ def prepare(
     Prefer this over `peek` as the first step WHEN the `extract` extra is installed
     — especially for reports with no DOI and thin embedded metadata, where the
     document text is the best source of title/author/publisher/date. It runs the
-    local Docling VLM once, caches the markdown by content hash, and returns
+    local Docling pipeline once, caches the markdown by content hash, and returns
     `status: staged` with the markdown `head`, any `doi`/`title_guess` read from
     the text, and a `markdown_path` you can read in full. Then `search` (better
     informed) or `add_manual`; the later add adopts the cached extraction, so the
-    slow VLM pass never repeats (the add result reports `extracted: true`).
+    extraction never repeats (the add result reports `extracted: true`).
+
+    `engine` is `auto` (default), `text`, or `vlm` — see the `extract` tool. On
+    `auto` a born-digital document is read through its own text layer in seconds;
+    only a scan falls through to the vision model, which can take minutes and
+    blocks this call. The response reports the `engine` that actually ran.
 
     Degrades cleanly: returns `status: extractor_unavailable` (with a `cite peek`
     fallback in `suggested_next`) if the extra isn't installed, and `status:
     duplicate` if the bytes are already filed.
-
-    Long-running: a vision model runs over the whole document and can take minutes;
-    this MCP call blocks until it finishes. If the file is clearly in a database
-    (a DOI is printed on it), `peek` + `search` may be faster.
     """
     lib = ops.resolve_library(_path(library))
     err = ops.require_initialized(lib)
@@ -153,8 +155,10 @@ def prepare(
         return _ok(err)
     try:
         return _ok(ops.prepare(
-            lib, _path(file), head_chars=head_chars, vlm_model=vlm_model
+            lib, _path(file), head_chars=head_chars, engine=engine, vlm_model=vlm_model
         ))
+    except ValueError as e:  # unknown engine
+        return _error(str(e))
     except Exception as e:  # docling runtime failure — surface, don't crash
         return _error(f"extraction failed: {e}")
 
@@ -308,6 +312,9 @@ def list_refs(library: str | None = None, full: bool = False, central: bool = Fa
         lib = ops.resolve_central()
     else:
         lib = ops.resolve_library(_path(library))
+        err = ops.require_initialized(lib)
+        if err is not None:
+            return _ok(err)
     return _ok(ops.library_view(lib, full=full))
 
 
@@ -315,6 +322,9 @@ def list_refs(library: str | None = None, full: bool = False, central: bool = Fa
 def get(id: str, library: str | None = None) -> str:
     """Return one full CSL-JSON record by id."""
     lib = ops.resolve_library(_path(library))
+    err = ops.require_initialized(lib)
+    if err is not None:
+        return _ok(err)
     result = ops.get(lib, id)
     # A found record is a raw CSL-JSON payload (no spec stamp); not_found is an
     # envelope. Distinguish on the sentinel status key — mirrors cli.get.
@@ -322,9 +332,21 @@ def get(id: str, library: str | None = None) -> str:
 
 
 @mcp.tool()
-def doctor(library: str | None = None) -> str:
-    """Library health check: invalid JSON, missing required fields, missing/orphan files."""
+def doctor(library: str | None = None, self_check: bool = False) -> str:
+    """Library health check: invalid JSON, missing required fields, missing/orphan files.
+
+    Pass self_check=True to check the *install* instead of the library's contents:
+    which optional extras are present, whether the `cite-mcp` entrypoint can
+    start, and which library root resolved and how. Call that first whenever a
+    result looks impossible — an empty library you know has records, or an
+    extract that reports the extra is missing.
+    """
     lib = ops.resolve_library(_path(library))
+    if self_check:
+        return _ok(run_self_check(lib))
+    err = ops.require_initialized(lib)
+    if err is not None:
+        return _ok(err)
     return _ok(run_doctor(lib))
 
 
@@ -395,6 +417,9 @@ def remove(id: str, delete_file: bool = False, library: str | None = None, centr
 def export(format: str = "csl", library: str | None = None) -> str:
     """Export the library as csl | bibtex | pandoc."""
     lib = ops.resolve_library(_path(library))
+    err = ops.require_initialized(lib)
+    if err is not None:
+        return _ok(err)
     try:
         return ops.export(lib, format)
     except ValueError as e:
@@ -403,33 +428,46 @@ def export(format: str = "csl", library: str | None = None) -> str:
 
 @mcp.tool()
 def extract(
-    id: str, vlm_model: str = "granite_docling", library: str | None = None
+    id: str,
+    engine: str = "auto",
+    vlm_model: str = "granite_docling",
+    library: str | None = None,
 ) -> str:
-    """Extract full markdown for a document via a local Docling VLM.
+    """Extract full markdown for a document via a local Docling pipeline.
 
     Optional feature: needs the `extract` extra on the cite install.
 
+    `engine` selects how the document is read:
+      * `auto` (default) — probe the text layer and choose. Use this.
+      * `text` — read the PDF's own text with layout/table models. Seconds to a
+        minute even for a book, and it cannot misread text that is already there.
+      * `vlm` — granite-docling reads rendered pages. Necessary only for scans.
+
+    The response reports the `engine` that ran and the `probe` that chose it, and
+    both are stored in `_provenance.extraction`.
+
     **Library mode** (when `id` is a record id): stores the markdown + referenced
-    images in the reference's bundle and records the extractor/version in
-    `_provenance.extraction`. Returns status 'error' with an install hint if
-    docling isn't available.
+    images in the reference's bundle. Returns status 'error' with an install hint
+    if docling isn't available.
 
     **Standalone mode** (when `id` is a path to an existing file): no library
     needed. Output markdown + artifacts are written beside the input file.
 
-    Long-running: a vision model runs over the whole document and can take
-    minutes. This MCP call blocks until it finishes and cannot be backgrounded
-    over MCP, so finish all other cite work first and call this last. For
-    fire-and-forget, run the `cite extract <id>` CLI as a background process
-    instead and poll `cite text <id> --path-only` for completion.
+    Only the `vlm` engine is slow. It can take minutes, blocks this call, and
+    cannot be backgrounded over MCP — so when a scan needs it, finish all other
+    cite work first, or run the `cite extract <id> --engine vlm` CLI as a
+    background process and poll `cite text <id> --path-only` for completion.
     """
     from pathlib import Path as _Path
 
     candidate = _Path(id)
     if candidate.suffix:
-        return _ok(ops.extract_file(candidate, vlm_model=vlm_model))
+        return _ok(ops.extract_file(candidate, engine=engine, vlm_model=vlm_model))
     lib = ops.resolve_library(_path(library))
-    return _ok(ops.extract(lib, id, vlm_model=vlm_model))
+    err = ops.require_initialized(lib)
+    if err is not None:
+        return _ok(err)
+    return _ok(ops.extract(lib, id, engine=engine, vlm_model=vlm_model))
 
 
 @mcp.tool()
@@ -439,6 +477,9 @@ def text(id: str, path_only: bool = False, library: str | None = None) -> str:
     Returns a JSON 'not_found' envelope if the reference hasn't been extracted yet.
     """
     lib = ops.resolve_library(_path(library))
+    err = ops.require_initialized(lib)
+    if err is not None:
+        return _ok(err)
     result = ops.text(lib, id, path_only=path_only)
     if result.get("status") == "not_found":
         return _ok(result)

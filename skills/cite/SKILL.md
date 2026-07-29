@@ -26,12 +26,12 @@ unsure of a flag or which fields a type needs.
    library, confirm the intended path with the user, then run
    `uv run cite init --library <path> --yes`. Never let a typo create a stray
    library implicitly.
-2. **Identify**: prefer `uv run cite prepare <file>` when the `extract` extra is
-   installed, especially for reports with no DOI or thin metadata. It extracts
-   markdown once into a staging cache, returns the markdown `head`, and a later
-   `add` adopts the cached extraction. If `prepare` returns
-   `extractor_unavailable`, or the file clearly has a printed DOI and speed
-   matters, use `uv run cite peek <file>`.
+2. **Identify**: start with `uv run cite peek <file>` — it reads embedded PDF
+   metadata and any printed DOI in milliseconds, and for most publisher PDFs
+   that is enough to go straight to `search`. When peek comes back thin (no DOI,
+   no title, a scanned or untagged report), use `uv run cite prepare <file>`:
+   it extracts markdown once into a staging cache, returns the markdown `head`,
+   and a later `add` adopts the cached extraction.
 3. **Search**: if a DOI was found, `uv run cite search --doi <doi>`. Otherwise
    `uv run cite search --title "<title>" [--author <surname>] [--year <yyyy>]`.
 4. **Add the match**: pick the best candidate from `.candidates`, then pipe just
@@ -70,14 +70,28 @@ unsure of a flag or which fields a type needs.
 ## Other commands
 - `uv run cite list` / `uv run cite get <id>` — browse the library.
 - `uv run cite doctor` — health-check records, provenance, source files, and
-  orphan bundles.
+  orphan bundles. `--self` checks the *install* instead (extras present,
+  `cite-mcp` startable, which library resolved and how) — run it whenever a
+  result looks impossible.
 - `uv run cite remove <id>` — remove a record and its whole bundle.
 - `uv run cite export --format csl|bibtex|pandoc` — emit standard formats.
+- `uv run cite extract <id>` — full markdown for a stored reference.
+  `--engine auto` (default) probes the text layer: a born-digital PDF is read
+  through its own text in well under a minute even for a book, and only a scan
+  falls through to `--engine vlm` (minutes — background that case). Never force
+  `vlm` on a document that already has a text layer.
 
-Library location: `--library <path>`, else `$CITE_LIBRARY`, else `./library`.
-Each reference is a self-contained bundle dir `<id>/` (record + original file +
-any extracted markdown). A prepared file's staged extraction is adopted by a
-later add of the same bytes, so the slow extraction is not repeated.
+**No `--library` on `search` or `validate`** — they error if given one. `search`
+queries the network; `validate` checks a CSL-JSON record on stdin against a
+`--type` and takes no record id.
+
+Library location: `--library <path>`, else `$CITE_LIBRARY`, else the nearest
+`cite.toml` found by walking *up* from the current directory. Every command,
+reads included, returns `status: no_library` rather than an empty result when
+the resolved path has no `cite.toml`. Each reference is a self-contained bundle
+dir `<id>/` (record + original file + any extracted markdown). A prepared file's
+staged extraction is adopted by a later add of the same bytes, so extraction is
+not repeated.
 
 ## Optional: full-text markdown
 - `cite prepare <file>` extracts markdown before adding, for citation context.

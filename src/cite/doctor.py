@@ -18,7 +18,10 @@ problem, never the full records.
 from __future__ import annotations
 
 import json
+from importlib import metadata as importlib_metadata
+from importlib import util as importlib_util
 
+from cite import __version__
 from cite.models import PROVENANCE_KEY, missing_required_fields
 from cite.naming import namespaced_id
 from cite.store import Library
@@ -114,4 +117,77 @@ def run_doctor(lib: Library) -> dict:
         "problem_count": len(problems),
         "problems": problems,
         "summary": summary,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Self-check — the install and its environment, not the library's contents
+# --------------------------------------------------------------------------- #
+
+# Maps each optional extra (declared in pyproject's [project.optional-dependencies])
+# to the import name that proves it is actually installed. We probe the *module*
+# rather than `importlib.metadata` because what callers care about is "can the
+# feature run", and probing keeps it cheap: `find_spec` only locates the module on
+# sys.path, it never imports it — so checking `extract` does not drag in docling/torch.
+_EXTRA_PROBES = {"mcp": "mcp", "extract": "docling"}
+
+
+def installed_extras() -> dict[str, bool]:
+    """Report which optional extras are available, e.g. {'mcp': True, 'extract': False}."""
+    return {
+        extra: importlib_util.find_spec(module) is not None
+        for extra, module in _EXTRA_PROBES.items()
+    }
+
+
+def run_self_check(lib: Library) -> dict:
+    """Report on the *install* rather than the library's contents.
+
+    Answers the questions that silently derail a session: is the `cite-mcp`
+    entrypoint able to start (it is registered by the host, so a missing `mcp`
+    extra shows up only as a server that never appears); is the extract engine
+    available; and which library root did we land on and how. Read-only, no
+    network, no heavy imports.
+    """
+    extras = installed_extras()
+
+    try:
+        version = importlib_metadata.version("cite")
+    except importlib_metadata.PackageNotFoundError:
+        version = __version__
+
+    # The MCP server is a separate entrypoint launched by the *host*, so its
+    # failure is invisible here unless we say so explicitly.
+    mcp_status = (
+        "ok"
+        if extras["mcp"]
+        else "broken: the 'mcp' extra is not installed, so `cite-mcp` exits at startup"
+    )
+
+    hints = []
+    missing = [name for name, present in extras.items() if not present]
+    if missing:
+        hints.append(f"install missing extras: uv tool install --force 'cite[all]'")
+    if not lib.is_initialized():
+        hints.append(
+            f"no library at '{lib.root}' — pass --library <path> or run `cite init`"
+        )
+
+    return {
+        "status": "ok" if not missing and lib.is_initialized() else "problems",
+        "cite_version": version,
+        "extras": extras,
+        "mcp_entrypoint": mcp_status,
+        "library": {
+            "resolved": str(lib.root),
+            "origin": lib.origin,
+            "initialized": lib.is_initialized(),
+            "searched_from": str(lib.searched_from) if lib.searched_from else None,
+        },
+        "extract_engines": {
+            # Both engines ship with docling; neither is usable without it.
+            "text": extras["extract"],
+            "vlm": extras["extract"],
+        },
+        "hints": hints,
     }

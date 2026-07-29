@@ -14,7 +14,9 @@ from cite.doctor import (
     MISSING_PROVENANCE,
     ORPHAN,
     run_doctor,
+    run_self_check,
 )
+from cite import ops
 from cite.store import Library
 
 
@@ -163,3 +165,45 @@ def test_problems_are_json_serializable_and_compact(tmp_path):
     out = run_doctor(lib)
     # Round-trips and stays small (context-frugal envelope).
     assert json.loads(json.dumps(out)) == out
+
+
+# --------------------------------------------------------------------------- #
+# Self-check — the install, not the library's contents
+# --------------------------------------------------------------------------- #
+
+
+class TestSelfCheck:
+    """`cite doctor --self` answers "why is the tool behaving impossibly?".
+
+    It exists because the two failures that silently derail a session — an MCP
+    server that never connects because its extra is missing, and a library root
+    that resolved somewhere unexpected — are both invisible from any other
+    command's output.
+    """
+
+    def test_reports_extras_and_the_mcp_entrypoint(self, tmp_path):
+        out = run_self_check(Library(tmp_path / "lib"))
+        assert out["extras"].keys() == {"mcp", "extract"}
+        # The MCP server is launched by the host, so a missing extra shows up
+        # only as a server that never appears — state it explicitly instead.
+        assert ("broken" in out["mcp_entrypoint"]) is (not out["extras"]["mcp"])
+
+    def test_explains_an_unresolved_library(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CITE_LIBRARY", raising=False)
+        monkeypatch.chdir(tmp_path)
+        out = run_self_check(ops.resolve_library(None))
+
+        assert out["status"] == "problems"
+        assert out["library"]["initialized"] is False
+        assert out["library"]["searched_from"] == str(tmp_path)
+        assert any("no library" in hint for hint in out["hints"])
+
+    def test_a_healthy_install_with_a_real_library_is_ok(self, tmp_path, monkeypatch):
+        lib = Library(tmp_path / "lib")
+        lib.init()
+        out = run_self_check(lib)
+        # `status` is ok only when nothing is missing; extras depend on the env.
+        expected = "ok" if all(out["extras"].values()) else "problems"
+        assert out["status"] == expected
+        assert out["library"]["initialized"] is True
+        assert out["hints"] == [] or all("library" not in h for h in out["hints"])

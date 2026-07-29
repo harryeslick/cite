@@ -42,10 +42,21 @@ def _add_ref(tmp_path: Path) -> tuple[str, str]:
     return added["id"], lib
 
 
-def _fake_extractor(n_images: int = 1):
-    """Build a stand-in for extract_to_markdown that writes a fake md + artifacts."""
+def _fake_extractor(n_images: int = 1, resolved_engine: str = "text"):
+    """Build a stand-in for extract_to_markdown that writes a fake md + artifacts.
 
-    def _fake(src_file: Path, md_path: Path, *, vlm_model: str = "granite_docling") -> dict:
+    ``resolved_engine`` stands in for what the real backend's auto-probe would
+    have chosen, so the wiring tests can assert the engine reaches provenance
+    without running docling.
+    """
+
+    def _fake(
+        src_file: Path,
+        md_path: Path,
+        *,
+        engine: str = "auto",
+        vlm_model: str = "granite_docling",
+    ) -> dict:
         md_path.parent.mkdir(parents=True, exist_ok=True)
         artifacts = md_path.parent / f"{md_path.stem}_artifacts"
         artifacts.mkdir(exist_ok=True)
@@ -55,13 +66,16 @@ def _fake_extractor(n_images: int = 1):
             img.write_bytes(b"\x89PNG")
             links += f"\n![img]({artifacts.name}/{img.name})\n"
         md_path.write_text(f"# {src_file.name}\n{links}")
+        used = resolved_engine if engine == "auto" else engine
         return {
             "markdown_path": str(md_path),
             "artifacts_dir": str(artifacts),
             "n_images": n_images,
             "extractor": "docling",
             "extractor_version": "9.9.9-fake",
-            "vlm_model": vlm_model,
+            "engine": used,
+            "probe": {"verdict": "text", "median_chars_per_page": 3000},
+            "vlm_model": vlm_model if used == "vlm" else None,
             "image_export_mode": "referenced",
         }
 
@@ -90,7 +104,9 @@ def test_extract_stores_markdown_and_provenance(tmp_path, monkeypatch):
     record = _run(["get", rid, "--library", lib])
     ext = record["_provenance"]["extraction"]
     assert ext["extractor"] == "docling"
-    assert ext["vlm_model"] == "granite_docling"
+    # The text engine ran, so no vision model is claimed in provenance.
+    assert ext["engine"] == "text"
+    assert "vlm_model" not in ext
     assert ext["image_export_mode"] == "referenced"
     assert ext["markdown_path"] == f"{stem}/{stem}.md"
     assert ext["n_images"] == 2
@@ -139,9 +155,48 @@ def test_extract_idempotent_overwrite(tmp_path, monkeypatch):
 
 
 def test_extract_missing_reference(tmp_path):
+    """An unknown id in a real library is not_found (vs no_library for a bad root)."""
     lib = str(tmp_path / "lib")
+    _run(["init", "--library", lib, "--yes"])
     out = _run(["extract", "cite:does-not-exist", "--library", lib])
     assert out["status"] == "not_found"
+
+
+def test_engine_flag_reaches_the_backend_and_provenance(tmp_path, monkeypatch):
+    """`--engine vlm` forces the vision model, and the record says so.
+
+    Which engine produced the markdown is not cosmetic: a text-layer and a VLM
+    extraction of the same document are different artefacts, and only the record
+    can tell you later which one you have.
+    """
+    rid, lib = _add_ref(tmp_path)
+    monkeypatch.setattr(extract_pkg, "extract_to_markdown", _fake_extractor())
+
+    out = _run(["extract", rid, "--engine", "vlm", "--library", lib])
+    assert out["engine"] == "vlm"
+
+    ext = _run(["get", rid, "--library", lib])["_provenance"]["extraction"]
+    assert ext["engine"] == "vlm"
+    assert ext["vlm_model"] == "granite_docling"
+
+
+def test_auto_is_the_default_engine(tmp_path, monkeypatch):
+    """With no flag, the backend is asked to choose — here it picks the text layer."""
+    rid, lib = _add_ref(tmp_path)
+    monkeypatch.setattr(
+        extract_pkg, "extract_to_markdown", _fake_extractor(resolved_engine="text")
+    )
+
+    out = _run(["extract", rid, "--library", lib])
+    assert out["engine"] == "text"
+    assert out["probe"]["verdict"] == "text"
+
+
+def test_unknown_engine_is_rejected(tmp_path):
+    rid, lib = _add_ref(tmp_path)
+    result = runner.invoke(app, ["extract", rid, "--engine", "ocr", "--library", lib])
+    assert result.exit_code != 0
+    assert "auto, text, vlm" in result.output
 
 
 def test_extract_graceful_degradation_when_docling_absent(tmp_path, monkeypatch):

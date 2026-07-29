@@ -35,7 +35,13 @@ def _fake_extractor(n_images: int = 1, body: str = "", *, calls: list | None = N
     assert the VLM ran exactly once (i.e. add adopted rather than re-extracting).
     """
 
-    def _fake(src_file: Path, md_path: Path, *, vlm_model: str = "granite_docling") -> dict:
+    def _fake(
+        src_file: Path,
+        md_path: Path,
+        *,
+        engine: str = "auto",
+        vlm_model: str = "granite_docling",
+    ) -> dict:
         if calls is not None:
             calls.append(str(src_file))
         md_path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,7 +59,9 @@ def _fake_extractor(n_images: int = 1, body: str = "", *, calls: list | None = N
             "n_images": n_images,
             "extractor": "docling",
             "extractor_version": "9.9.9-fake",
-            "vlm_model": vlm_model,
+            "engine": "text" if engine == "auto" else engine,
+            "probe": {"verdict": "text", "median_chars_per_page": 3000},
+            "vlm_model": vlm_model if engine == "vlm" else None,
             "image_export_mode": "referenced",
         }
 

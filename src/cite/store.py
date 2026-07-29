@@ -30,8 +30,19 @@ from cite.models import PROVENANCE_KEY
 class Library:
     """Pure storage layer — does NOT compute hashes or generate filenames."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self, root: Path, *, origin: str = "explicit", searched_from: Path | None = None
+    ) -> None:
         self.root = root
+        # How this root was chosen, and — when it was searched for rather than
+        # named — the directory the upward search started from. Purely
+        # descriptive; no method here reads them. They exist so a "there is no
+        # library" error can explain *why* it landed on this path, which is the
+        # difference between a useful error and a confusing one. One line, not a
+        # list of every ancestor tried: the start and "or any parent" say the
+        # same thing in a fraction of the tokens (SUITE.md §3).
+        self.origin = origin
+        self.searched_from = searched_from
 
     # ------------------------------------------------------------------ #
     # Per-entity bundle paths

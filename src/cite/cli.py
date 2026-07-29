@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import sys
 from importlib import metadata as importlib_metadata
-from importlib import util as importlib_util
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +27,7 @@ from cite import __version__
 from cite import ops
 from cite.guide import guide as build_guide
 from cite.models import SPEC_VERSION
-from cite.doctor import run_doctor
+from cite.doctor import installed_extras, run_doctor, run_self_check
 from cite.search import search as run_search
 from cite.store import Library
 from cite.validate import validate as run_validate
@@ -75,27 +74,6 @@ def _require_initialized(lib: Library) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Optional-extra probing (CLI-local: powers `version`'s extras report)
-# --------------------------------------------------------------------------- #
-
-
-# Maps each optional extra (declared in pyproject's [project.optional-dependencies])
-# to the import name that proves it is actually installed. We probe the *module*
-# rather than `importlib.metadata` because what callers care about is "can the
-# feature run", and probing keeps it cheap: `find_spec` only locates the module on
-# sys.path, it never imports it — so checking `extract` does not drag in docling/torch.
-_EXTRA_PROBES = {"mcp": "mcp", "extract": "docling"}
-
-
-def _installed_extras() -> dict[str, bool]:
-    """Report which optional extras are available, e.g. {'mcp': True, 'extract': False}."""
-    return {
-        extra: importlib_util.find_spec(module) is not None
-        for extra, module in _EXTRA_PROBES.items()
-    }
-
-
-# --------------------------------------------------------------------------- #
 # Commands
 # --------------------------------------------------------------------------- #
 
@@ -125,7 +103,7 @@ def version() -> None:
             "tool": "cite",
             "version": ver,
             "installed": installed,
-            "extras": _installed_extras(),
+            "extras": installed_extras(),
         }
     )
 
@@ -145,8 +123,11 @@ def prepare(
     head_chars: int = typer.Option(
         2000, help="How many leading characters of the extracted markdown to return."
     ),
+    engine: str = typer.Option(
+        "auto", help="auto | text | vlm — how to read the document."
+    ),
     vlm_model: str = typer.Option(
-        "granite_docling", help="Docling VLM model preset to use."
+        "granite_docling", help="Docling VLM model preset (used by the vlm engine)."
     ),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
@@ -155,21 +136,29 @@ def prepare(
     The recommended first step when the ``extract`` extra is installed — especially
     for reports with no DOI and thin embedded metadata, where the document text
     itself is the best source of title / author / publisher / date. It runs the
-    local Docling VLM once, caches the markdown under the file's content hash in
-    ``<library>/.staging/<hash>/``, and returns the markdown *head* plus any DOI /
+    local Docling pipeline once, caches the markdown under the file's content hash
+    in ``<library>/.staging/<hash>/``, and returns the markdown *head* plus any DOI /
     title it can read from it. Read the head, then ``cite search`` (now better
     informed) or build a manual record; the later ``cite add <file>`` recomputes
-    the same hash and adopts this cached extraction, so the VLM never runs twice.
+    the same hash and adopts this cached extraction, so extraction never runs twice.
+
+    ``--engine`` works exactly as it does on ``cite extract``: ``auto`` reads a
+    born-digital document through its own text layer and falls back to the vision
+    model only for scans. The returned envelope reports which engine ran.
 
     Degrades cleanly: if the ``extract`` extra is not installed it returns
     ``status: extractor_unavailable`` pointing you at the deterministic fallback
-    (``cite peek``) rather than erroring out. Slow (a vision model runs over the
-    whole document); if your runtime can background shell commands, run it detached.
+    (``cite peek``) rather than erroring out. Only the ``vlm`` engine is slow
+    enough to be worth backgrounding.
     """
+    if engine not in ("auto", "text", "vlm"):
+        raise typer.BadParameter("--engine must be one of: auto, text, vlm")
     lib = _resolve_library(library)
     _require_initialized(lib)
     try:
-        result = ops.prepare(lib, file, head_chars=head_chars, vlm_model=vlm_model)
+        result = ops.prepare(
+            lib, file, head_chars=head_chars, engine=engine, vlm_model=vlm_model
+        )
     except Exception as e:  # docling runtime failure — surface, don't crash
         _emit({"status": "error", "message": f"extraction failed: {e}"})
         raise typer.Exit(code=1)
@@ -298,6 +287,7 @@ def list_(
         lib = ops.resolve_central()
     else:
         lib = _resolve_library(library)
+        _require_initialized(lib)
     _emit(ops.library_view(lib, full=full))
 
 
@@ -337,9 +327,24 @@ def init(
 
 
 @app.command()
-def doctor(library: Path | None = typer.Option(None, help="Library root.")) -> None:
-    """Validate the whole library: bad JSON, missing fields, missing/orphan files."""
+def doctor(
+    library: Path | None = typer.Option(None, help="Library root."),
+    self_: bool = typer.Option(
+        False, "--self", help="Check the cite install itself instead of the library."
+    ),
+) -> None:
+    """Validate the whole library: bad JSON, missing fields, missing/orphan files.
+
+    With ``--self``, checks the *install* instead: which optional extras are
+    present, whether the ``cite-mcp`` entrypoint can start, and which library
+    root resolved and how. Run this first whenever results look impossible —
+    an empty library, a missing MCP server, an extract command that won't run.
+    """
     lib = _resolve_library(library)
+    if self_:
+        _emit(run_self_check(lib))
+        return
+    _require_initialized(lib)
     _emit(run_doctor(lib))
 
 
@@ -350,6 +355,7 @@ def get(
 ) -> None:
     """Print one reference record."""
     lib = _resolve_library(library)
+    _require_initialized(lib)
     result = ops.get(lib, id)
     # A found record is a raw CSL-JSON payload (no spec stamp); the not_found
     # branch is a normal envelope. Distinguish on the sentinel status key.
@@ -445,15 +451,26 @@ def extract(
     id: str = typer.Argument(
         ..., help="Record id (cite:<stem> or bare stem), or a file path for standalone extraction."
     ),
+    engine: str = typer.Option(
+        "auto", help="auto | text | vlm — how to read the document."
+    ),
     vlm_model: str = typer.Option(
-        "granite_docling", help="Docling VLM model preset to use."
+        "granite_docling", help="Docling VLM model preset (used by the vlm engine)."
     ),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
-    """Extract full markdown for a document using a local Docling VLM.
+    """Extract full markdown for a document using a local Docling pipeline.
 
     Optional feature — requires the ``extract`` extra (`uv tool install
     'cite[extract]'`). All processing is local/private.
+
+    **Engine.** ``auto`` (the default) probes the document's text layer and picks:
+    a born-digital PDF is read through its own text with layout/table models
+    (fast, and incapable of misreading text that is already there), while a scan
+    goes to the granite-docling vision model. Force one with ``--engine text`` or
+    ``--engine vlm``. The chosen engine and the probe are recorded under
+    ``_provenance.extraction``. Only the ``vlm`` engine is slow enough to be worth
+    backgrounding.
 
     **Library mode** (default when ``id`` is a record id): the markdown and its
     referenced images are written into the reference's bundle as
@@ -465,12 +482,15 @@ def extract(
     is needed. The markdown and artifacts are written beside the input file as
     ``<stem>.md`` + ``<stem>_artifacts/``.
     """
+    if engine not in ("auto", "text", "vlm"):
+        raise typer.BadParameter("--engine must be one of: auto, text, vlm")
     candidate = Path(id)
     if candidate.suffix:
-        result = ops.extract_file(candidate, vlm_model=vlm_model)
+        result = ops.extract_file(candidate, engine=engine, vlm_model=vlm_model)
     else:
         lib = _resolve_library(library)
-        result = ops.extract(lib, id, vlm_model=vlm_model)
+        _require_initialized(lib)
+        result = ops.extract(lib, id, engine=engine, vlm_model=vlm_model)
     _emit(result)
     if result.get("status") == "error":
         raise typer.Exit(code=1)
@@ -489,6 +509,7 @@ def text(
     Emits a JSON ``not_found`` envelope if the reference has not been extracted yet.
     """
     lib = _resolve_library(library)
+    _require_initialized(lib)
     result = ops.text(lib, id, path_only=path_only)
     if result.get("status") == "not_found":
         _emit(result)
@@ -503,6 +524,7 @@ def export(
 ) -> None:
     """Export the library as CSL-JSON, BibTeX, or Pandoc-ready CSL-JSON."""
     lib = _resolve_library(library)
+    _require_initialized(lib)
     try:
         typer.echo(ops.export(lib, format))
     except ValueError as exc:

@@ -5,6 +5,31 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.3.0] - 2026-07-29
+
+### Added
+
+- **Extraction engine selection.** `cite extract` / `cite prepare` gained `--engine auto|text|vlm`, defaulting to `auto`. `src/cite/extract/probe.py` reads the document's text layer with pypdf (already core — no new dependency, milliseconds, no ML) and reports `{pages, sampled, median_chars_per_page, pages_without_text, verdict}`. On `auto`, a `text` verdict routes to Docling's `StandardPdfPipeline` (layout + table-structure models over the PDF's own text) and a `scanned` verdict — including any unreadable or non-PDF input, where the VLM is the safe fallback — routes to the existing `VlmPipeline`. A 181-page born-digital book now extracts in ~45 s instead of tens of minutes, and the text engine cannot misread text that is already in the file. The engine used and the probe that chose it are returned in the envelope and stored in `_provenance.extraction`.
+- `cite doctor --self` (and the `doctor(self_check=True)` MCP tool): checks the *install* rather than the library's contents — which optional extras are present, whether the `cite-mcp` entrypoint can start, and which library root resolved and how. A registered-but-unstartable `cite-mcp` (the `mcp` extra missing) is invisible to the host that launched it; this reports it in one call.
+- `Extraction.engine` and `Extraction.probe` fields on the provenance model. Both optional, so records written before the engine split still load.
+- Tests: `tests/test_probe.py` (a hand-built minimal PDF exercises the born-digital, no-text-layer, unreadable, and sampling-cap paths), library-resolution cases in `tests/test_store.py`, and self-check cases in `tests/test_doctor.py`.
+
+### Changed
+
+- **Library resolution now walks up for `cite.toml`.** With no `--library` and no `$CITE_LIBRARY`, `ops.resolve_library` searches from the current directory upwards, testing each ancestor both as a library and as the parent of a `library/`. An explicitly named path is still used literally and never searched from. `Library` carries `origin` and `searched_from` so errors can explain how the root was chosen.
+- The text engine enables OCR only when the probe actually saw pages without text. Leaving `do_ocr` on unconditionally cost a ~25 MB RapidOCR model download on first run and an engine init on every run, to read pages already known not to exist (33.8 s → 5.2 s on a small born-digital PDF).
+- `guide`, `AGENTS.md`, `skills/cite/SKILL.md`, and `README.md` document the engine choice, the resolution rules, `doctor --self`, and — new — that `search` and `validate` are library-independent and reject `--library`, and that `validate` checks a CSL record on stdin rather than a stored one.
+- The identify step now leads with `cite peek` and reserves `cite prepare` for files whose embedded metadata is thin, rather than recommending full extraction first.
+- `_EXTRA_PROBES` / `installed_extras()` moved from `cli.py` to `doctor.py` so both shells can use them.
+- README install instructions lead with a single global install from the git remote — `uv tool install --force --from git+https://github.com/harryeslick/cite.git 'cite[all]'` — which is also the upgrade path (`--force` re-pulls `main`, where a git source has no version for uv to compare). The local-checkout form is kept as the development alternative, and the extraction section no longer documents a separate `cite[extract]` global install now that `[all]` covers it.
+
+### Fixed
+
+- **A missing library no longer reports as a healthy empty one.** `doctor`, `list`, `get`, `text`, and `export` (CLI and MCP) now call `require_initialized`, which returns `status: no_library` and exits non-zero instead of `{"status": "ok", "checked": 0}` / `{"count": 0}`. Previously `cd library && cite doctor` resolved `library/library`, found nothing, and reported a healthy empty library — making "you are pointed at the wrong directory" indistinguishable from "nothing is filed yet". The envelope names the resolved path, how it was chosen, and where the search began.
+- `require_initialized`'s envelope changed from `status: error` to the more specific `status: no_library`.
+
 ## [0.2.3] - 2026-06-08
 
 ### Added

@@ -36,30 +36,47 @@ uv run pytest         # run the test suite
 root) — `uv tool install` puts `cite` and `cite-mcp` on your PATH:
 
 ```bash
-# from this local checkout (works now, no git remote needed):
-uv tool install "/path/to/cite[mcp]"      # add -e for an editable install
-# or, once pushed to a remote, shareable:
-uv tool install "cite[mcp] @ git+https://github.com/harryeslick/cite.git"
+uv tool install --force --from git+https://github.com/harryeslick/cite.git 'cite[all]'
 ```
 
-Drop the `[mcp]` extra if you only want the CLI. `uv tool update cite` re-pulls
-from the same source.
+`[all]` pulls both optional extras — `mcp` (the `cite-mcp` server) and `extract`
+(local Docling markdown extraction, heavy: torch + models). Ask for less if you
+want less: `'cite[mcp]'` for the CLI plus the MCP server, or plain `'cite'` for
+the CLI alone. `--force` overwrites an existing install, so the same line is also
+how you upgrade to the current `main`.
+
+To install from a local checkout instead — useful while developing:
+
+```bash
+uv tool install --force "/path/to/cite[all]"   # add -e for an editable install
+```
 
 ### Library location
 
-The library resolves from `--library <path>`, else `$CITE_LIBRARY`, else
-`./library`. Two common setups:
+The library resolves from `--library <path>`, else `$CITE_LIBRARY`, else the
+nearest `cite.toml` found by walking **up** from the current directory (checking
+each ancestor both as a library itself and as the parent of a `library/`). So
+commands work from anywhere inside a project, not just its root. A path you name
+explicitly is used literally and never searched from — you asked for that path.
+
+Two common setups:
 
 - **One central library** (a single personal collection reachable everywhere) —
   add `export CITE_LIBRARY="$HOME/citations"` to your shell profile.
-- **Per-project library** — pass `--library ./library`, or set a project-local
-  `CITE_LIBRARY`, to scope citations to one project.
+- **Per-project library** — keep a `library/` in the project root and let the
+  upward search find it from any subdirectory.
 
 `cite.toml` is the marker that makes a directory a real library — `cite init`
 is the *only* command that creates one (it asks for confirmation unless you pass
-`--yes`). `add`/`add-url`/`prepare` refuse to write into a directory that lacks
-`cite.toml`, so a typo'd `--library` path can't silently spin up a stray library;
-they error with a `cite init ...` hint instead.
+`--yes`). Every other command that touches a library, **reads included**, refuses
+a directory that lacks `cite.toml`: you get `status: no_library` and a non-zero
+exit, never an empty result that looks like a healthy empty library. A typo'd
+`--library` path therefore can't silently spin up a stray library *or* silently
+report nothing.
+
+If a result ever looks impossible, `cite doctor --self` reports which optional
+extras are installed, whether the `cite-mcp` entrypoint can start, and which
+library root resolved and how.
 
 Either way the library is laid out as a directory of **per-entity bundles** —
 each reference is a self-contained directory named by its id:
@@ -113,8 +130,9 @@ branches; inspect `status` rather than the exit code.
 | `cite list [--full]`                                    | List references.                                                      |
 | `cite get <id>`                                         | Print one record.                                                     |
 | `cite doctor`                                           | Health-check the whole library (bad JSON, missing fields/files, orphans). |
+| `cite doctor --self`                                    | Health-check the *install*: extras present, `cite-mcp` startable, which library resolved. |
 | `cite remove <id>`                                      | Remove a reference (deletes its whole bundle directory).              |
-| `cite extract <id>`                                     | Extract full markdown via a local Docling VLM (optional, see below).  |
+| `cite extract <id> [--engine auto\|text\|vlm]`          | Extract full markdown via a local Docling pipeline (optional, see below). |
 | `cite text <id> [--path-only]`                          | Print a reference's extracted markdown (or its path).                 |
 | `cite export --format csl\|bibtex\|pandoc`              | Emit the library in a standard format.                                |
 | `cite guide [--json]`                                   | Print the full agent-facing contract.                                 |
@@ -175,29 +193,47 @@ Ideas not yet implemented, in rough priority order:
   the core library. Could be backed by metadata tags in the `_provenance` block
   or a simple topic-to-id mapping file.
 
-- **centralised library** at user level. copies selected files into project dir when required. prevents user level duplication between projects. 
+- **centralised library** at user level. copies selected files into project dir when required. prevents user level duplication between projects.
 
 ## Local markdown extraction (optional)
 
 `cite extract <id>` converts a stored reference's source document to full markdown
-using [Docling](https://github.com/docling-project/docling) with its local
-`granite_docling` VLM pipeline — **entirely on your machine**, nothing is sent to
-a remote service. Images are exported as referenced local files so figures render:
+using [Docling](https://github.com/docling-project/docling) — **entirely on your
+machine**, nothing is sent to a remote service. Images are exported as referenced
+local files so figures render:
 
 ```bash
 uv sync --extra extract            # dev: install docling (heavy: pulls torch + model)
-# or: uv tool install "cite[extract]"   # global install with the extractor
+# global installs of cite[all] (see "Install / run") already include the extractor
 
 uv run cite extract cite:2022-agency-annual-report_abc123
 uv run cite text   cite:2022-agency-annual-report_abc123   # print the markdown
 ```
 
+### Choosing an engine
+
+Most documents worth citing are born-digital: they already carry a perfect text
+layer, and re-reading it with a vision model is slow *and* lossy. So `--engine`
+defaults to `auto`, which probes the text layer first and picks:
+
+| engine | what it does | when |
+| --- | --- | --- |
+| `text` | Docling's standard pipeline: layout + table-structure models over the PDF's own text, OCR'ing only pages that have none | born-digital PDFs |
+| `vlm`  | `granite_docling` reads rendered pages | scans, image-only documents |
+
+For scale: a 181-page born-digital book extracts in **~45 seconds** on the `text`
+engine, against tens of minutes for the VLM — and the text engine cannot misread
+a word that was already in the file. Force one with `--engine text` / `--engine
+vlm` when you disagree with the probe.
+
 The markdown and its images are written into the reference's bundle as
-`<id>/<id>.md` + `<id>/<id>_artifacts/`, and the extractor name + version are
-recorded under `_provenance.extraction` so a stale extraction is detectable. The
-feature is **optional**: the `extract`/`text` commands return a `status: error`
-with an install hint when the `extract` extra is absent, and the rest of `cite`
-works without it. Re-running `extract` overwrites prior output.
+`<id>/<id>.md` + `<id>/<id>_artifacts/`. The extractor name and version, the
+engine used, and the probe that chose it are recorded under
+`_provenance.extraction`, so you can tell later which kind of extraction you have
+and whether it is stale. The feature is **optional**: the `extract`/`text`
+commands return a `status: error` with an install hint when the `extract` extra
+is absent, and the rest of `cite` works without it. Re-running `extract`
+overwrites prior output.
 
 ## For agents
 

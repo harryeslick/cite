@@ -101,11 +101,19 @@ class Extraction(BaseModel):
     Stored under `_provenance.extraction`. Docling is ML-based, so output is
     reproducible only relative to a pinned `extractor_version` — we record it so
     a stale extraction (file changed, or extractor upgraded) is detectable later.
+
+    `engine` matters for the same reason: text-layer and VLM extractions of the
+    same document are not equivalent artefacts, and knowing which one produced
+    the markdown tells you whether re-running with the other could improve it.
+    Both `engine` and `vlm_model` are optional so records written before the
+    engine split still load.
     """
 
     extractor: str  # e.g. "docling"
     extractor_version: str
-    vlm_model: str  # e.g. "granite_docling"
+    engine: str | None = None  # "text" | "vlm"; None on pre-split records
+    probe: dict | None = None  # text-layer probe that chose the engine
+    vlm_model: str | None = None  # e.g. "granite_docling"; None on the text engine
     image_export_mode: str  # e.g. "referenced"
     extracted_at: str  # ISO-8601 UTC
     source_file_hash: str  # full SHA-256 of the bytes the markdown came from

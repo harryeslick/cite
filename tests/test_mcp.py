@@ -28,8 +28,28 @@ def test_validate_reports_missing_fields():
 
 
 def test_list_empty_library(tmp_path):
-    out = json.loads(cite_mcp.list_refs(library=str(tmp_path / "lib")))
+    """An initialized but empty library reports zero references."""
+    lib = str(tmp_path / "lib")
+    cite_mcp.init(library=lib, yes=True)
+    out = json.loads(cite_mcp.list_refs(library=lib))
     assert out == {"count": 0, "references": [], "spec": "suite/1"}
+
+
+def test_reads_against_a_missing_library_say_so(tmp_path):
+    """A non-existent root must not masquerade as an empty library.
+
+    This is the failure this guard exists for: `list`/`get`/`doctor` against a
+    path with no cite.toml used to return an empty success, making "you are
+    pointed at the wrong directory" indistinguishable from "nothing is filed yet".
+    """
+    missing = str(tmp_path / "nope")
+    for out in (
+        json.loads(cite_mcp.list_refs(library=missing)),
+        json.loads(cite_mcp.get("anything", library=missing)),
+        json.loads(cite_mcp.doctor(library=missing)),
+    ):
+        assert out["status"] == "no_library"
+        assert "cite init" in out["hint"]
 
 
 def test_add_manual_then_list_then_remove(tmp_path):
@@ -89,8 +109,19 @@ def test_update_patches_fields_through_the_cli(tmp_path):
 
 
 def test_unknown_record_is_not_found(tmp_path):
-    out = json.loads(cite_mcp.get("does-not-exist", library=str(tmp_path / "lib")))
+    """A real library that simply lacks the id — distinct from a missing library."""
+    lib = str(tmp_path / "lib")
+    cite_mcp.init(library=lib, yes=True)
+    out = json.loads(cite_mcp.get("does-not-exist", library=lib))
     assert out["status"] == "not_found"
+
+
+def test_self_check_reports_the_install(tmp_path):
+    out = json.loads(cite_mcp.doctor(library=str(tmp_path / "nope"), self_check=True))
+    assert out["extras"].keys() == {"mcp", "extract"}
+    assert out["extras"]["mcp"] is True  # this test only runs with the extra
+    assert out["library"]["initialized"] is False
+    assert any("no library" in h for h in out["hints"])
 
 
 def test_bad_input_returns_a_clean_error_envelope():

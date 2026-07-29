@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from cite import ops
 from cite.store import Library
 from cite.models import PROVENANCE_KEY
 
@@ -253,3 +254,65 @@ class TestExtractedText:
         lib.write_record("rec001", _make_record())
         with pytest.raises(FileNotFoundError):
             lib.read_text("rec001")
+
+
+class TestLibraryResolution:
+    """How `cite` decides which library a command acts on.
+
+    These exist because the original resolution — a bare relative
+    ``Path("library")`` — was silently wrong from any subdirectory, and nothing
+    tested it. A read against the wrong root returned an empty success, so the
+    bug was invisible.
+    """
+
+    def test_walks_up_to_find_the_marker(self, tmp_path: Path, monkeypatch):
+        """A `library/` beside the project root is found from deep inside it."""
+        project = tmp_path / "project"
+        Library(project / "library").init()
+        nested = project / "wiki" / "notes"
+        nested.mkdir(parents=True)
+
+        monkeypatch.chdir(nested)
+        lib = ops.resolve_library(None)
+
+        assert lib.root == project / "library"
+        assert lib.origin == "found cite.toml"
+
+    def test_a_library_is_found_from_inside_itself(self, tmp_path: Path, monkeypatch):
+        """`cd library && cite doctor` must not resolve `library/library`."""
+        root = tmp_path / "project" / "library"
+        Library(root).init()
+
+        monkeypatch.chdir(root)
+        assert ops.resolve_library(None).root == root
+
+    def test_explicit_library_is_never_searched_from(self, tmp_path: Path, monkeypatch):
+        """A named path is taken literally, even when a real library sits above."""
+        project = tmp_path / "project"
+        Library(project / "library").init()
+        monkeypatch.chdir(project)
+
+        lib = ops.resolve_library(Path("elsewhere"))
+        assert lib.root == Path("elsewhere")
+        assert lib.origin == "--library"
+
+    def test_env_var_is_taken_literally(self, tmp_path: Path, monkeypatch):
+        project = tmp_path / "project"
+        Library(project / "library").init()
+        monkeypatch.chdir(project)
+        monkeypatch.setenv("CITE_LIBRARY", str(tmp_path / "env-lib"))
+
+        lib = ops.resolve_library(None)
+        assert lib.root == tmp_path / "env-lib"
+        assert lib.origin == "$CITE_LIBRARY"
+
+    def test_no_marker_anywhere_reports_where_it_looked(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("CITE_LIBRARY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        err = ops.require_initialized(ops.resolve_library(None))
+        assert err is not None
+        assert err["status"] == "no_library"
+        # One line, not a list of every ancestor tried.
+        assert isinstance(err["searched"], str)
+        assert str(tmp_path) in err["searched"]

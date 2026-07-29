@@ -12,17 +12,17 @@ from cite.models import CITE_TYPES, REQUIRED_FIELDS, SPEC_VERSION, TYPE_MAP
 
 _COMMANDS = [
     {"name": "peek", "summary": "Extract DOI/title/metadata from a local file without adding it (cheap, deterministic; no extra needed)."},
-    {"name": "prepare", "summary": "Extract a file's full markdown BEFORE adding it (optional 'extract' extra), caching it by content hash and returning the markdown head + any DOI/title found. Best context for reports with no DOI/poor metadata. `cite add` later adopts the cache (no re-extract). Falls back to peek when the extra is absent."},
+    {"name": "prepare", "summary": "Extract a file's full markdown BEFORE adding it (optional 'extract' extra), caching it by content hash and returning the markdown head + any DOI/title found. Best context for reports with no DOI/poor metadata. `cite add` later adopts the cache (no re-extract). Falls back to peek when the extra is absent. Engine chosen automatically (see `extract`); fast on born-digital files."},
     {"name": "search", "summary": "Search for a reference by --doi or --title across Crossref/DataCite/OpenAlex."},
     {"name": "add", "summary": "Add a file to the library with CSL metadata (from --csl or --manual fields). Gated against identical-byte and same-work duplicates; --force commits past a near_duplicate."},
     {"name": "add-url", "summary": "Add a citation from a URL. An HTML page is snapshotted and its metadata (Open Graph/title/JSON-LD) parsed into a web-site record (accessed = today); a PDF is downloaded + peeked and handed back (status `downloaded`) for the normal search->add flow. URL dedup is exact (query/fragment ignored)."},
-    {"name": "validate", "summary": "Check that a record has all required fields for its cite_type."},
+    {"name": "validate", "summary": "Check a CSL-JSON record supplied on stdin (--csl -) against a --type, listing missing required fields. Takes NO record id and NO --library — it does not read the library. To check stored records use `doctor`."},
     {"name": "list", "summary": "List all records in the library (brief summary view)."},
     {"name": "get", "summary": "Retrieve the full CSL-JSON record for a given record id."},
-    {"name": "doctor", "summary": "Health-check the whole library: reports records with invalid JSON, missing provenance, missing required fields, a missing source file, or orphan bundles. Read-only; emits a summary plus one short line per problem."},
+    {"name": "doctor", "summary": "Health-check the whole library: reports records with invalid JSON, missing provenance, missing required fields, a missing source file, or orphan bundles. Read-only; emits a summary plus one short line per problem. `--self` checks the install instead (extras present, cite-mcp startable, which library resolved and how) — run it when a result looks impossible."},
     {"name": "update", "summary": "Amend a stored record's metadata in place: --field key=value sets/replaces, --remove-field deletes, --type changes the cite_type. Re-validates and preserves the document/hash/provenance; editing an id-bearing field (title/author/year) re-stems the whole bundle (response reports `renamed`). Use instead of remove + re-add to fix a wrong field."},
     {"name": "remove", "summary": "Remove a record from the library (deletes the whole reference bundle)."},
-    {"name": "extract", "summary": "Extract full markdown for a reference via a local Docling VLM (optional 'extract' extra). Slow/blocking — run in the background and poll `cite text` when your runtime allows."},
+    {"name": "extract", "summary": "Extract full markdown for a reference via a local Docling pipeline (optional 'extract' extra). `--engine auto` (default) reads a born-digital PDF through its own text layer in seconds; only a scan falls through to the vision model, which is slow/blocking — background that case and poll `cite text`."},
     {"name": "text", "summary": "Print a reference's extracted markdown, or its path with --path-only."},
     {"name": "export", "summary": "Export library records as CSL-JSON or another format."},
     {"name": "guide", "summary": "Print this agent usage contract (add --json for machine-readable form)."},
@@ -33,18 +33,24 @@ _COMMANDS = [
 # --------------------------------------------------------------------------- #
 
 _WORKFLOW = [
-    "A library is the directory marked by `cite.toml`. `add`/`add-url`/`prepare` only "
-    "write into an *existing* library and error with a `cite init` hint if `cite.toml` "
-    "is missing — they never create one implicitly (a typo'd `--library` path must not "
-    "spin up a stray library). If you get that error, confirm the intended path with the "
-    "USER, then run `cite init --library <path> --yes` to create it (creation is a "
-    "deliberate, approved act, not an automatic side effect of adding).",
-    "Identify the document. If the `extract` extra is installed, prefer `cite prepare <file>`: "
-    "it extracts the full markdown once (cached by content hash) and returns the markdown head "
-    "plus any DOI/title read from the text — the best context for reports with no DOI or thin "
-    "metadata. Read the head, then proceed to search/add (a later `cite add` adopts the cache, so "
-    "the slow extraction never repeats). If `prepare` returns `extractor_unavailable` (or the extra "
-    "isn't installed), fall back to `cite peek <file>`, which cheaply reads any embedded DOI/title.",
+    "A library is the directory marked by `cite.toml`. With no `--library` and no "
+    "`$CITE_LIBRARY`, cite walks UP from the current directory to find that marker, so "
+    "you do not need to be in the project root — but an explicitly named `--library` path "
+    "is used literally and never searched from. EVERY command that touches a library "
+    "(reads included) returns `status: no_library` if the resolved path has no `cite.toml`; "
+    "an empty result always means an empty library, never a wrong path. If you get "
+    "`no_library`, confirm the intended path with the USER, then run "
+    "`cite init --library <path> --yes` to create it (creation is a deliberate, approved "
+    "act, not an automatic side effect of adding — a typo'd path must not spin up a stray "
+    "library).",
+    "Identify the document. `cite peek <file>` is the cheapest first move — it reads embedded "
+    "PDF metadata and any printed DOI in milliseconds, and for a file with a populated Title/"
+    "Author (most publisher PDFs) that is all you need to go straight to `search`. When peek "
+    "comes back thin — no DOI, no title, a scanned or untagged report — use `cite prepare "
+    "<file>` instead: it extracts the full markdown once (cached by content hash) and returns "
+    "the markdown head plus any DOI/title read from the text. Read the head, then proceed to "
+    "search/add (a later `cite add` adopts the cache, so extraction never repeats). If "
+    "`prepare` returns `extractor_unavailable`, fall back to `cite peek`.",
     "Run `cite search --doi <doi>` or `cite search --title <title>` to find candidates in Crossref/DataCite/OpenAlex.",
     "Pick the best match and run `cite add <file> --csl -` (pipe CSL-JSON on stdin) to add it.",
     "If no database match is found, gather required fields (run `cite validate` to see what's missing; "
@@ -93,12 +99,27 @@ _NOTES = (
     "markdown ends up at `<id>/<id>.md` either way. `prepare` caches its output under "
     "`<library>/.staging/<content-hash>/`; the next `cite add` of those exact bytes recomputes "
     "the hash, adopts the cached markdown into the bundle (its `added` envelope then reports "
-    "`extracted: true` + `markdown_path`), and the VLM never runs twice. Extraction runs a "
-    "vision model over the whole document and can take minutes, blocking until it finishes; if "
-    "your runtime can run shell commands in the background, launch `cite prepare <file>` / "
-    "`cite extract <id>` detached and keep doing other work, then poll "
-    "`cite text <id> --path-only` (path appears only once extraction completes) instead of "
-    "waiting on it inline."
+    "`extracted: true` + `markdown_path`), so extraction never runs twice. "
+    "EXTRACTION ENGINE: `--engine auto` (the default) probes the document's text layer and "
+    "picks. A born-digital PDF is read through its own text with layout/table models — fast "
+    "(seconds to a minute even for a book) and incapable of misreading text that is already "
+    "there. Only a scan falls through to `vlm`, the vision model, which is the slow path that "
+    "can take minutes and is worth backgrounding: launch `cite extract <id>` detached and poll "
+    "`cite text <id> --path-only` (the path appears only once extraction completes). Do NOT "
+    "force `--engine vlm` on a document that has a text layer; you would spend minutes to get "
+    "a worse result. The response and `_provenance.extraction` both report the `engine` used "
+    "and the `probe` that chose it. "
+    "LIBRARY-INDEPENDENT COMMANDS: `search` and `validate` take no `--library` and will error "
+    "if given one. `search` queries Crossref/DataCite/OpenAlex over the network. `validate` "
+    "checks a CSL-JSON record supplied on stdin against a `--type`; it is NOT a way to "
+    "validate a stored record and takes no record id — use `cite doctor` for the library, or "
+    "`cite get <id>` to inspect one record. "
+    "WHEN A RESULT LOOKS IMPOSSIBLE: reads against a directory with no `cite.toml` return "
+    "`status: no_library` (never a fake-empty success). Run `cite doctor --self` — it reports "
+    "which optional extras are installed, whether the `cite-mcp` entrypoint can start, and "
+    "which library root resolved and how. With no `--library` and no `$CITE_LIBRARY`, cite "
+    "walks up from the current directory looking for `cite.toml`, so any subdirectory of a "
+    "project finds its library."
 )
 
 # --------------------------------------------------------------------------- #
