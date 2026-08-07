@@ -635,6 +635,7 @@ def prepare(
     head_chars: int = 2000,
     engine: str = "auto",
     vlm_model: str = "granite_docling",
+    enrich=(),
 ) -> dict:
     """Extract a file's full markdown *before* adding it, for better citation context.
 
@@ -669,7 +670,7 @@ def prepare(
         lib.clear_staged(full_hash)  # wipe any partial/stale staging first
         try:
             result = extract_to_markdown(
-                file, staged_md, engine=engine, vlm_model=vlm_model
+                file, staged_md, engine=engine, vlm_model=vlm_model, enrich=enrich
             )
         except ExtractorUnavailable:
             lib.clear_staged(full_hash)
@@ -690,6 +691,9 @@ def prepare(
             "engine": result["engine"],
             "probe": result["probe"],
             "vlm_model": result["vlm_model"],
+            # `or None` so an unenriched staging adopts into a record identical
+            # to one written before the flag existed (Extraction drops None).
+            "enrichments": result.get("enrichments") or None,
             "image_export_mode": result["image_export_mode"],
             "extracted_at": _now_iso(),
             "source_file_hash": full_hash,
@@ -967,12 +971,19 @@ def update(
 
 
 def extract(
-    lib: Library, id: str, *, engine: str = "auto", vlm_model: str = "granite_docling"
+    lib: Library,
+    id: str,
+    *,
+    engine: str = "auto",
+    vlm_model: str = "granite_docling",
+    enrich=(),
 ) -> dict:
     """Extract full markdown for a stored reference using a local Docling pipeline.
 
     ``engine`` is ``"auto"`` (probe the document, use its text layer when it has
     one and the VLM when it doesn't), or ``"text"`` / ``"vlm"`` to force one.
+    ``enrich`` optionally adds docling's ``formula`` / ``code`` models on the
+    text engine, which is what makes equations survive into the markdown.
 
     Writes ``<id>/<id>.md`` + artifacts into the bundle and records the extractor
     name/version and the engine used under ``_provenance.extraction``. Returns
@@ -1001,7 +1012,7 @@ def extract(
     lib.clear_text(stem)  # idempotent re-extract: wipe any prior output first
     try:
         result = extract_to_markdown(
-            src, lib.text_path(stem), engine=engine, vlm_model=vlm_model
+            src, lib.text_path(stem), engine=engine, vlm_model=vlm_model, enrich=enrich
         )
     except ExtractorUnavailable as e:
         return {"status": "error", "message": str(e), "hint": "install cite[extract]"}
@@ -1015,6 +1026,9 @@ def extract(
         engine=result["engine"],
         probe=result["probe"],
         vlm_model=result["vlm_model"],
+        # Empty means "nothing enriched", which exclude_none keeps out of the
+        # record entirely — same as it was before the flag existed.
+        enrichments=result.get("enrichments") or None,
         image_export_mode=result["image_export_mode"],
         extracted_at=_now_iso(),
         source_file_hash=prov.get("file_hash") or content_hash(src),
@@ -1033,12 +1047,13 @@ def extract(
         "extractor": result["extractor"],
         "extractor_version": result["extractor_version"],
         "engine": result["engine"],
+        "enrichments": result.get("enrichments", []),
         "probe": result["probe"],
     }
 
 
 def extract_file(
-    src: Path, *, engine: str = "auto", vlm_model: str = "granite_docling"
+    src: Path, *, engine: str = "auto", vlm_model: str = "granite_docling", enrich=()
 ) -> dict:
     """Extract a standalone file to markdown without a cite library.
 
@@ -1059,7 +1074,9 @@ def extract_file(
         shutil.rmtree(artifacts_dir)
 
     try:
-        result = extract_to_markdown(src, md_path, engine=engine, vlm_model=vlm_model)
+        result = extract_to_markdown(
+            src, md_path, engine=engine, vlm_model=vlm_model, enrich=enrich
+        )
     except ExtractorUnavailable as e:
         return {"status": "error", "message": str(e), "hint": "install cite[extract]"}
     except Exception as e:
@@ -1074,6 +1091,7 @@ def extract_file(
         "extractor": result["extractor"],
         "extractor_version": result["extractor_version"],
         "engine": result["engine"],
+        "enrichments": result.get("enrichments", []),
         "probe": result["probe"],
     }
 

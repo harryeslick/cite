@@ -56,6 +56,7 @@ def _fake_extractor(n_images: int = 1, resolved_engine: str = "text"):
         *,
         engine: str = "auto",
         vlm_model: str = "granite_docling",
+        enrich=(),
     ) -> dict:
         md_path.parent.mkdir(parents=True, exist_ok=True)
         artifacts = md_path.parent / f"{md_path.stem}_artifacts"
@@ -76,6 +77,7 @@ def _fake_extractor(n_images: int = 1, resolved_engine: str = "text"):
             "engine": used,
             "probe": {"verdict": "text", "median_chars_per_page": 3000},
             "vlm_model": vlm_model if used == "vlm" else None,
+            "enrichments": list(enrich),
             "image_export_mode": "referenced",
         }
 
@@ -197,6 +199,61 @@ def test_unknown_engine_is_rejected(tmp_path):
     result = runner.invoke(app, ["extract", rid, "--engine", "ocr", "--library", lib])
     assert result.exit_code != 0
     assert "auto, text, vlm" in result.output
+
+
+def test_enrich_flag_reaches_the_backend_and_provenance(tmp_path, monkeypatch):
+    """`--enrich formula` is recorded, because it changes what the markdown contains.
+
+    Without it docling drops equations it will not decode, so an unenriched
+    extraction of a modelling paper is missing content rather than merely
+    formatted differently — the record has to say which one you have.
+    """
+    rid, lib = _add_ref(tmp_path)
+    monkeypatch.setattr(extract_pkg, "extract_to_markdown", _fake_extractor())
+
+    out = _run(["extract", rid, "--enrich", "formula,code", "--library", lib])
+    assert out["enrichments"] == ["code", "formula"]  # normalised: sorted
+
+    ext = _run(["get", rid, "--library", lib])["_provenance"]["extraction"]
+    assert ext["enrichments"] == ["code", "formula"]
+
+
+def test_no_enrichment_by_default_and_nothing_recorded(tmp_path, monkeypatch):
+    """The default stays the fast path, and leaves the record as it always was."""
+    rid, lib = _add_ref(tmp_path)
+    monkeypatch.setattr(extract_pkg, "extract_to_markdown", _fake_extractor())
+
+    out = _run(["extract", rid, "--library", lib])
+    assert out["enrichments"] == []
+
+    ext = _run(["get", rid, "--library", lib])["_provenance"]["extraction"]
+    assert "enrichments" not in ext
+
+
+def test_unknown_enrichment_is_rejected(tmp_path):
+    rid, lib = _add_ref(tmp_path)
+    result = runner.invoke(
+        app, ["extract", rid, "--enrich", "tables", "--library", lib]
+    )
+    assert result.exit_code != 0
+    assert "'tables'" in result.output
+    assert "formula" in result.output
+
+
+def test_enrichment_on_the_vlm_engine_errors_rather_than_being_dropped(tmp_path):
+    """Not a no-op: silently ignoring it would write markdown whose provenance lies.
+
+    Uses the real backend (no monkeypatch) because the rule lives there — and it
+    is reached before docling is imported, so this runs without the extra.
+    """
+    rid, lib = _add_ref(tmp_path)
+    result = runner.invoke(
+        app, ["extract", rid, "--engine", "vlm", "--enrich", "formula", "--library", lib]
+    )
+    assert result.exit_code != 0
+    out = json.loads(result.output)
+    assert out["status"] == "error"
+    assert "text engine" in out["message"]
 
 
 def test_extract_graceful_degradation_when_docling_absent(tmp_path, monkeypatch):

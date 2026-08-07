@@ -132,7 +132,7 @@ branches; inspect `status` rather than the exit code.
 | `cite doctor`                                           | Health-check the whole library (bad JSON, missing fields/files, orphans). |
 | `cite doctor --self`                                    | Health-check the *install*: extras present, `cite-mcp` startable, which library resolved. |
 | `cite remove <id>`                                      | Remove a reference (deletes its whole bundle directory).              |
-| `cite extract <id> [--engine auto\|text\|vlm]`          | Extract full markdown via a local Docling pipeline (optional, see below). |
+| `cite extract <id> [--engine auto\|text\|vlm] [--enrich formula,code]` | Extract full markdown via a local Docling pipeline (optional, see below). |
 | `cite text <id> [--path-only]`                          | Print a reference's extracted markdown (or its path).                 |
 | `cite export --format csl\|bibtex\|pandoc`              | Emit the library in a standard format.                                |
 | `cite guide [--json]`                                   | Print the full agent-facing contract.                                 |
@@ -225,6 +225,39 @@ For scale: a 181-page born-digital book extracts in **~45 seconds** on the `text
 engine, against tens of minutes for the VLM — and the text engine cannot misread
 a word that was already in the file. Force one with `--engine text` / `--engine
 vlm` when you disagree with the probe.
+
+### Equations: `--enrich formula`
+
+The text engine reads what the PDF's text layer says, and typeset maths is the
+one thing that layer routinely gets wrong — parentheses arriving as `ð`/`Þ`,
+unmapped glyphs as `/C0`, sub/superscripts flattened. Docling will not guess at
+a region it cannot decode, so by default it writes a placeholder and moves on:
+
+```markdown
+<!-- formula-not-decoded -->
+```
+
+For a modelling paper, that means the equations are **absent** from the markdown,
+not merely ugly — and nothing downstream can tell, because the surrounding prose
+extracted perfectly. `--enrich formula` re-reads each of those regions with a
+small vision model (CodeFormulaV2) and emits LaTeX instead; `--enrich code` does
+the same for code blocks, and `--enrich formula,code` runs both.
+
+It is off by default because it is expensive. A 20-page modelling paper with 15
+equations went from **12 s to 10 minutes** — a ~600 MB model download the first
+time, then per-region inference on CPU. Turn it on for maths-heavy sources where
+the equations are the point, leave it off otherwise, and background the call the
+way you would a `vlm` run.
+
+What you get back is real LaTeX, including detail the text layer had destroyed —
+in that paper `fðCÞ` came back as `f(\Psi)`, the vision model reading a psi where
+the font encoding had produced a Latin C. Equation numbers are sometimes swept
+into the LaTeX alongside the equation; the maths is right, the trailing `(1)` may
+sit inside the `$$`. It applies to the `text` engine only — combine
+it with `--engine text`, and note that asking for it on a document that probes as
+a scan is an error rather than a silent no-op, so an extraction never claims an
+enrichment that did not run. Whatever ran is recorded as
+`_provenance.extraction.enrichments`.
 
 The markdown and its images are written into the reference's bundle as
 `<id>/<id>.md` + `<id>/<id>_artifacts/`. The extractor name and version, the

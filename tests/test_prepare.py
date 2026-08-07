@@ -41,6 +41,7 @@ def _fake_extractor(n_images: int = 1, body: str = "", *, calls: list | None = N
         *,
         engine: str = "auto",
         vlm_model: str = "granite_docling",
+        enrich=(),
     ) -> dict:
         if calls is not None:
             calls.append(str(src_file))
@@ -62,6 +63,7 @@ def _fake_extractor(n_images: int = 1, body: str = "", *, calls: list | None = N
             "engine": "text" if engine == "auto" else engine,
             "probe": {"verdict": "text", "median_chars_per_page": 3000},
             "vlm_model": vlm_model if engine == "vlm" else None,
+            "enrichments": list(enrich),
             "image_export_mode": "referenced",
         }
 

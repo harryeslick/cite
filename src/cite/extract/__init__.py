@@ -11,14 +11,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cite.extract.docling import AUTO, ENGINES, ExtractorUnavailable, extract_to_markdown
+from cite.extract.docling import (
+    AUTO,
+    ENGINES,
+    ENRICHMENTS,
+    ExtractorUnavailable,
+    extract_to_markdown,
+    normalize_enrich,
+)
 from cite.extract.probe import probe_text_layer
 
 __all__ = [
     "AUTO",
     "ENGINES",
+    "ENRICHMENTS",
     "ExtractorUnavailable",
     "extract_to_markdown",
+    "normalize_enrich",
     "probe_text_layer",
 ]
 
@@ -29,6 +38,9 @@ def extract(
     *,
     engine: str = AUTO,
     vlm_model: str = "granite_docling",
+    enrich=(),
 ) -> dict:
     """Extract ``src_file`` to markdown at ``md_path`` (currently via docling)."""
-    return extract_to_markdown(src_file, md_path, engine=engine, vlm_model=vlm_model)
+    return extract_to_markdown(
+        src_file, md_path, engine=engine, vlm_model=vlm_model, enrich=enrich
+    )

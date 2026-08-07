@@ -80,6 +80,13 @@ unsure of a flag or which fields a type needs.
   through its own text in well under a minute even for a book, and only a scan
   falls through to `--engine vlm` (minutes — background that case). Never force
   `vlm` on a document that already has a text layer.
+  Add `--engine text --enrich formula` for a maths-heavy paper, or whenever the
+  extracted markdown contains `<!-- formula-not-decoded -->` — that placeholder
+  means docling found equations and dropped them, so the markdown you are reading
+  is missing the content the paper is about. It is slow — a 20-page paper with 15
+  equations took 10 minutes against 12 seconds without it, plus a ~600 MB
+  first-run download — so background it, and never add it to a document with no
+  maths in it.
 
 **No `--library` on `search` or `validate`** — they error if given one. `search`
 queries the network; `validate` checks a CSL-JSON record on stdin against a

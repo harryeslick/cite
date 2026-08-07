@@ -114,6 +114,11 @@ class Extraction(BaseModel):
     engine: str | None = None  # "text" | "vlm"; None on pre-split records
     probe: dict | None = None  # text-layer probe that chose the engine
     vlm_model: str | None = None  # e.g. "granite_docling"; None on the text engine
+    # Enrichment models that ran, e.g. ["formula"]. An extraction without formula
+    # enrichment drops every equation it finds (docling writes an undecoded
+    # placeholder), so this is the field that says whether a maths-heavy paper's
+    # markdown is complete — and re-running with `--enrich formula` is the remedy.
+    enrichments: list[str] | None = None  # None on records predating the flag
     image_export_mode: str  # e.g. "referenced"
     extracted_at: str  # ISO-8601 UTC
     source_file_hash: str  # full SHA-256 of the bytes the markdown came from

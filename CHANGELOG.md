@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Formula and code enrichment.** `cite extract` / `cite prepare` (and the matching MCP tools) gained `--enrich formula,code`, off by default. On the `text` engine, docling leaves a `<!-- formula-not-decoded -->` placeholder wherever its layout model found an equation it would not guess at — so a modelling paper extracted with its equations *missing*, and nothing in the output said so. `--enrich formula` re-reads those regions with docling's CodeFormulaV2 vision model and emits LaTeX; `--enrich code` does the same for code blocks. Off by default because it is expensive: a 20-page paper with 15 equations went from 12 s to 10 minutes, plus a ~600 MB first-run model download. Worth it where the equations are the point — on that paper all 15 placeholders resolved, and `fðCÞ` (a psi the font encoding had mangled into a Latin C) came back as `f(\Psi)`. Text engine only: asking for enrichment on a document that resolves to `vlm` is an error, not a silent no-op, so a stored extraction never claims an enrichment that did not run.
+- `cite guide` gained a MISSING EQUATIONS note teaching the `<!-- formula-not-decoded -->` signal and the `--enrich formula` remedy, so an agent with no skill loaded can recognise and fix a silently equation-free extraction.
+- `Extraction.enrichments` on the provenance model — optional, and omitted entirely when nothing was enriched, so records written before this change still load and unenriched records are byte-identical to before.
+
 ## [0.3.0] - 2026-07-29
 
 ### Added

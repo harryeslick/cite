@@ -73,6 +73,21 @@ def _require_initialized(lib: Library) -> None:
         raise typer.Exit(code=1)
 
 
+def _parse_enrich(enrich: str) -> tuple[str, ...]:
+    """Validate ``--enrich`` up front so a typo fails before docling loads.
+
+    The extractor validates too (it is the layer that has to be right), but
+    doing it here turns a mid-run ValueError into typer's own usage error,
+    the same way ``--engine`` is checked.
+    """
+    from cite.extract import normalize_enrich
+
+    try:
+        return normalize_enrich(enrich)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+
+
 # --------------------------------------------------------------------------- #
 # Commands
 # --------------------------------------------------------------------------- #
@@ -129,6 +144,11 @@ def prepare(
     vlm_model: str = typer.Option(
         "granite_docling", help="Docling VLM model preset (used by the vlm engine)."
     ),
+    enrich: str = typer.Option(
+        "",
+        help="formula,code — decode equations/code the text layer mangled (text "
+             "engine only; minutes, and a ~600 MB model download on first use).",
+    ),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
     """Extract a file's full markdown *before* adding it, for better citation context.
@@ -145,6 +165,8 @@ def prepare(
     ``--engine`` works exactly as it does on ``cite extract``: ``auto`` reads a
     born-digital document through its own text layer and falls back to the vision
     model only for scans. The returned envelope reports which engine ran.
+    ``--enrich formula`` likewise works as on ``cite extract``, and the staged
+    markdown a later ``cite add`` adopts is the enriched one.
 
     Degrades cleanly: if the ``extract`` extra is not installed it returns
     ``status: extractor_unavailable`` pointing you at the deterministic fallback
@@ -153,11 +175,17 @@ def prepare(
     """
     if engine not in ("auto", "text", "vlm"):
         raise typer.BadParameter("--engine must be one of: auto, text, vlm")
+    enrich = _parse_enrich(enrich)
     lib = _resolve_library(library)
     _require_initialized(lib)
     try:
         result = ops.prepare(
-            lib, file, head_chars=head_chars, engine=engine, vlm_model=vlm_model
+            lib,
+            file,
+            head_chars=head_chars,
+            engine=engine,
+            vlm_model=vlm_model,
+            enrich=enrich,
         )
     except Exception as e:  # docling runtime failure — surface, don't crash
         _emit({"status": "error", "message": f"extraction failed: {e}"})
@@ -457,6 +485,11 @@ def extract(
     vlm_model: str = typer.Option(
         "granite_docling", help="Docling VLM model preset (used by the vlm engine)."
     ),
+    enrich: str = typer.Option(
+        "",
+        help="formula,code — decode equations/code the text layer mangled (text "
+             "engine only; minutes, and a ~600 MB model download on first use).",
+    ),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
     """Extract full markdown for a document using a local Docling pipeline.
@@ -472,6 +505,16 @@ def extract(
     ``_provenance.extraction``. Only the ``vlm`` engine is slow enough to be worth
     backgrounding.
 
+    **Enrichment.** By default docling refuses to guess at an equation it cannot
+    read from the text layer, and writes ``<!-- formula-not-decoded -->`` instead
+    — so a modelling paper extracts with its equations *missing*, not mangled.
+    ``--enrich formula`` re-reads each of those regions with a small vision model
+    and emits LaTeX; ``--enrich code`` does the same for code blocks; combine them
+    as ``--enrich formula,code``. Off by default because it is slow: a 20-page
+    paper with 15 equations took 10 minutes against 12 seconds without it, plus a
+    ~600 MB model download on first use. Background it. Text engine only — pass
+    ``--engine text`` alongside it, or the request errors on a scanned document.
+
     **Library mode** (default when ``id`` is a record id): the markdown and its
     referenced images are written into the reference's bundle as
     ``<id>/<id>.md`` + ``<id>/<id>_artifacts/``; re-running overwrites prior
@@ -484,13 +527,16 @@ def extract(
     """
     if engine not in ("auto", "text", "vlm"):
         raise typer.BadParameter("--engine must be one of: auto, text, vlm")
+    enrich = _parse_enrich(enrich)
     candidate = Path(id)
     if candidate.suffix:
-        result = ops.extract_file(candidate, engine=engine, vlm_model=vlm_model)
+        result = ops.extract_file(
+            candidate, engine=engine, vlm_model=vlm_model, enrich=enrich
+        )
     else:
         lib = _resolve_library(library)
         _require_initialized(lib)
-        result = ops.extract(lib, id, engine=engine, vlm_model=vlm_model)
+        result = ops.extract(lib, id, engine=engine, vlm_model=vlm_model, enrich=enrich)
     _emit(result)
     if result.get("status") == "error":
         raise typer.Exit(code=1)

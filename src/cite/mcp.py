@@ -127,6 +127,7 @@ def prepare(
     head_chars: int = 2000,
     engine: str = "auto",
     vlm_model: str = "granite_docling",
+    enrich: str = "",
     library: str | None = None,
 ) -> str:
     """Extract a file's full markdown BEFORE adding it, for better citation context.
@@ -144,6 +145,9 @@ def prepare(
     `auto` a born-digital document is read through its own text layer in seconds;
     only a scan falls through to the vision model, which can take minutes and
     blocks this call. The response reports the `engine` that actually ran.
+    `enrich` works as on the `extract` tool; the markdown a later `add` adopts is
+    whatever this call produced, so pass `enrich: "formula"` here for a paper
+    whose equations you will need.
 
     Degrades cleanly: returns `status: extractor_unavailable` (with a `cite peek`
     fallback in `suggested_next`) if the extra isn't installed, and `status:
@@ -155,9 +159,14 @@ def prepare(
         return _ok(err)
     try:
         return _ok(ops.prepare(
-            lib, _path(file), head_chars=head_chars, engine=engine, vlm_model=vlm_model
+            lib,
+            _path(file),
+            head_chars=head_chars,
+            engine=engine,
+            vlm_model=vlm_model,
+            enrich=enrich,
         ))
-    except ValueError as e:  # unknown engine
+    except ValueError as e:  # unknown engine or enrichment
         return _error(str(e))
     except Exception as e:  # docling runtime failure — surface, don't crash
         return _error(f"extraction failed: {e}")
@@ -431,6 +440,7 @@ def extract(
     id: str,
     engine: str = "auto",
     vlm_model: str = "granite_docling",
+    enrich: str = "",
     library: str | None = None,
 ) -> str:
     """Extract full markdown for a document via a local Docling pipeline.
@@ -445,6 +455,19 @@ def extract(
 
     The response reports the `engine` that ran and the `probe` that chose it, and
     both are stored in `_provenance.extraction`.
+
+    `enrich` is `"formula"`, `"code"`, or `"formula,code"` — off by default. Use
+    `enrich: "formula"` for a maths-heavy paper: without it docling drops every
+    equation it will not guess at, leaving a `<!-- formula-not-decoded -->`
+    placeholder where the equation should be, so the markdown reads as if the
+    paper had no maths in it. It is slow enough to plan around — a 20-page paper
+    with 15 equations took 10 minutes against 12 seconds without it, plus a
+    ~600 MB model download the first time — and it blocks this call, so treat it
+    like a `vlm` run: finish other cite work first, or run the CLI
+    `cite extract <id> --engine text --enrich formula` as a background process
+    and poll `cite text <id> --path-only`. Text engine only — pass
+    `engine: "text"` with it, or a scanned document will error rather than
+    silently skip the enrichment.
 
     **Library mode** (when `id` is a record id): stores the markdown + referenced
     images in the reference's bundle. Returns status 'error' with an install hint
@@ -462,12 +485,16 @@ def extract(
 
     candidate = _Path(id)
     if candidate.suffix:
-        return _ok(ops.extract_file(candidate, engine=engine, vlm_model=vlm_model))
+        return _ok(
+            ops.extract_file(
+                candidate, engine=engine, vlm_model=vlm_model, enrich=enrich
+            )
+        )
     lib = ops.resolve_library(_path(library))
     err = ops.require_initialized(lib)
     if err is not None:
         return _ok(err)
-    return _ok(ops.extract(lib, id, engine=engine, vlm_model=vlm_model))
+    return _ok(ops.extract(lib, id, engine=engine, vlm_model=vlm_model, enrich=enrich))
 
 
 @mcp.tool()
