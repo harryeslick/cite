@@ -36,7 +36,7 @@ uv run pytest         # run the test suite
 root) — `uv tool install` puts `cite` and `cite-mcp` on your PATH:
 
 ```bash
-uv tool install --force --from git+https://github.com/harryeslick/cite.git 'cite[all]'
+uv tool install --force --from 'git+https://github.com/harryeslick/cite.git[all]' cite
 ```
 
 `[all]` pulls both optional extras — `mcp` (the `cite-mcp` server) and `extract`
