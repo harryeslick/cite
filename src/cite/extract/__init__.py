@@ -20,15 +20,18 @@ from cite.extract.docling import (
     normalize_enrich,
 )
 from cite.extract.probe import probe_text_layer
+from cite.extract.tabular import TABULAR_SUFFIXES, tabular_to_markdown
 
 __all__ = [
     "AUTO",
     "ENGINES",
     "ENRICHMENTS",
     "ExtractorUnavailable",
+    "TABULAR_SUFFIXES",
     "extract_to_markdown",
     "normalize_enrich",
     "probe_text_layer",
+    "tabular_to_markdown",
 ]
 
 

@@ -490,6 +490,9 @@ def extract(
         help="formula,code — decode equations/code the text layer mangled (text "
              "engine only; minutes, and a ~600 MB model download on first use).",
     ),
+    supplement: int | None = typer.Option(
+        None, "--supplement", help="Re-extract the Nth supplementary file instead."
+    ),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
     """Extract full markdown for a document using a local Docling pipeline.
@@ -524,21 +527,74 @@ def extract(
     **Standalone mode** (when ``id`` is a path to an existing file): no library
     is needed. The markdown and artifacts are written beside the input file as
     ``<stem>.md`` + ``<stem>_artifacts/``.
+
+    **Supplements.** ``--supplement N`` re-extracts one attached supplementary
+    file (``<id>/<id>_suppNN.md``) rather than the reference's own document —
+    the remedy for a supplement first extracted without ``--enrich formula``.
     """
     if engine not in ("auto", "text", "vlm"):
         raise typer.BadParameter("--engine must be one of: auto, text, vlm")
     enrich = _parse_enrich(enrich)
     candidate = Path(id)
-    if candidate.suffix:
+    if candidate.suffix and supplement is None:
         result = ops.extract_file(
             candidate, engine=engine, vlm_model=vlm_model, enrich=enrich
         )
     else:
         lib = _resolve_library(library)
         _require_initialized(lib)
-        result = ops.extract(lib, id, engine=engine, vlm_model=vlm_model, enrich=enrich)
+        result = ops.extract(
+            lib, id, engine=engine, vlm_model=vlm_model, enrich=enrich,
+            supplement=supplement,
+        )
     _emit(result)
     if result.get("status") == "error":
+        raise typer.Exit(code=1)
+
+
+@app.command(name="add-supplement")
+def add_supplement(
+    id: str = typer.Argument(..., help="Parent record id; bare stem or cite:<stem>."),
+    file: Path = typer.Argument(..., help="Path to the supplementary file."),
+    label: str | None = typer.Option(
+        None, help='Human label, e.g. "Supporting Information S1".'
+    ),
+    engine: str = typer.Option("auto", help="auto | text | vlm — how to read the document."),
+    vlm_model: str = typer.Option(
+        "granite_docling", help="Docling VLM model preset (used by the vlm engine)."
+    ),
+    enrich: str = typer.Option(
+        "", help="formula,code — decode equations/code the text layer mangled."
+    ),
+    library: Path | None = typer.Option(None, help="Library root."),
+) -> None:
+    """Attach supplementary material to an existing reference and extract its text.
+
+    Supplementary material belongs *to* a paper: it has no citation metadata of
+    its own, so it is stored inside the parent's bundle as ``<id>_suppNN.<ext>``
+    and listed under ``_provenance.supplements`` — never added as a separate
+    reference, and so never appearing in ``list`` or ``export``. It travels with
+    the parent through ``update``, ``pull``, central sync and ``remove``.
+
+    Text is extracted where the file type allows: PDFs and office documents go
+    through the Docling pipeline (needs the ``extract`` extra), ``.csv``/``.xlsx``
+    are converted to markdown tables, and anything else — a ``.zip`` of raw data —
+    is stored as-is with no markdown. **A file that cannot be read is still
+    attached**, with a ``warning`` on the response.
+
+    Read it back with ``cite text <id> --supplement N``; re-extract it with
+    ``cite extract <id> --supplement N``.
+    """
+    if engine not in ("auto", "text", "vlm"):
+        raise typer.BadParameter("--engine must be one of: auto, text, vlm")
+    lib = _resolve_library(library)
+    _require_initialized(lib)
+    result = ops.add_supplement(
+        lib, id, file,
+        label=label, engine=engine, vlm_model=vlm_model, enrich=_parse_enrich(enrich),
+    )
+    _emit(result)
+    if result.get("status") in ("error", "not_found"):
         raise typer.Exit(code=1)
 
 
@@ -548,15 +604,21 @@ def text(
     path_only: bool = typer.Option(
         False, "--path-only", help="Print the markdown file path instead of its content."
     ),
+    supplement: int | None = typer.Option(
+        None, "--supplement", help="Print the Nth supplementary file's markdown instead."
+    ),
     library: Path | None = typer.Option(None, help="Library root."),
 ) -> None:
     """Print a reference's extracted markdown (or its path with --path-only).
 
     Emits a JSON ``not_found`` envelope if the reference has not been extracted yet.
+
+    ``--supplement N`` prints an attached supplementary file's markdown instead;
+    ``cite get <id>`` lists what is attached and under which ordinal.
     """
     lib = _resolve_library(library)
     _require_initialized(lib)
-    result = ops.text(lib, id, path_only=path_only)
+    result = ops.text(lib, id, path_only=path_only, supplement=supplement)
     if result.get("status") == "not_found":
         _emit(result)
         return

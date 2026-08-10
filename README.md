@@ -133,7 +133,8 @@ branches; inspect `status` rather than the exit code.
 | `cite doctor --self`                                    | Health-check the *install*: extras present, `cite-mcp` startable, which library resolved. |
 | `cite remove <id>`                                      | Remove a reference (deletes its whole bundle directory).              |
 | `cite extract <id> [--engine auto\|text\|vlm] [--enrich formula,code]` | Extract full markdown via a local Docling pipeline (optional, see below). |
-| `cite text <id> [--path-only]`                          | Print a reference's extracted markdown (or its path).                 |
+| `cite add-supplement <id> <file> [--label "<l>"]`       | Attach supplementary material to an existing reference (see below).   |
+| `cite text <id> [--path-only] [--supplement <n>]`       | Print a reference's extracted markdown (or its path), or a supplement's. |
 | `cite export --format csl\|bibtex\|pandoc`              | Emit the library in a standard format.                                |
 | `cite guide [--json]`                                   | Print the full agent-facing contract.                                 |
 
@@ -194,6 +195,46 @@ Ideas not yet implemented, in rough priority order:
   or a simple topic-to-id mapping file.
 
 - **centralised library** at user level. copies selected files into project dir when required. prevents user level duplication between projects.
+
+## Supplementary material
+
+A paper's supporting information, supplementary data tables and extended methods
+belong **to** that paper — they carry no citation metadata of their own, so they
+cannot produce a well-formed id, and adding them as separate references would put
+them in `list` and `export` as if they were citable works. Attach them instead:
+
+```bash
+uv run cite add-supplement cite:2024-smith-a-study_a1b2c3 si.pdf     --label "Supporting Information S1"
+uv run cite add-supplement cite:2024-smith-a-study_a1b2c3 table_s1.xlsx --label "Table S1"
+
+uv run cite text cite:2024-smith-a-study_a1b2c3 --supplement 1       # read it back
+uv run cite get  cite:2024-smith-a-study_a1b2c3                      # see what's attached
+```
+
+They live inside the parent's bundle, sharing its stem:
+
+```
+2024-smith-a-study_a1b2c3/
+  2024-smith-a-study_a1b2c3.json          # _provenance.supplements: [...]
+  2024-smith-a-study_a1b2c3.pdf           # the paper
+  2024-smith-a-study_a1b2c3.md
+  2024-smith-a-study_a1b2c3_supp01.pdf    # Supporting Information S1
+  2024-smith-a-study_a1b2c3_supp01.md
+  2024-smith-a-study_a1b2c3_supp02.xlsx   # Table S1
+  2024-smith-a-study_a1b2c3_supp02.md
+```
+
+Because a reference is its directory, supplements need no relational bookkeeping:
+`remove`, `pull`, central sync and the `update` re-stem all carry them along.
+
+**Text is extracted where the file type allows.** PDFs and office documents go
+through the Docling pipeline (needs the `extract` extra); `.csv`/`.tsv`/`.xlsx`
+become markdown tables, one section per worksheet, needing nothing heavier than
+openpyxl; anything else — a `.zip` of raw data — is stored as-is with no markdown.
+**A file that cannot be read is still attached**, with a `warning` on the response
+rather than an error, because an unreadable supplement is still worth keeping
+beside its paper. Re-extract one later (say, with `--enrich formula`) via
+`cite extract <id> --supplement <n>`; re-attaching identical bytes is a no-op.
 
 ## Local markdown extraction (optional)
 

@@ -85,4 +85,20 @@ prints one JSON object with a `status` field — read it and follow
   an id and output goes beside the input file as `<stem>.md` (+ `<stem>_artifacts/`).
 - `cite text <id> [--path-only]` prints the extracted markdown (or its path).
 
+## Supplementary material
+- A paper's supporting information, supplementary tables and extended methods are
+  **attachments of that paper**, not references. Never `cite add` one: it has no
+  citation metadata, so it cannot produce a well-formed id, and it would appear in
+  `list` and `export` as if it were a citable work.
+- `cite add-supplement <id> <file> [--label "<l>"]` attaches one to an existing
+  reference and extracts its text. Stored in the parent's bundle as
+  `<id>_suppNN.<ext>` (+ `<id>_suppNN.md`) and listed under
+  `_provenance.supplements`; it travels with the parent through `update`, `pull`,
+  central sync and `remove`.
+- Documents go through Docling, `.csv`/`.xlsx` become markdown tables, and
+  anything else is stored with `kind: "binary"` and no markdown. A file that
+  cannot be read is still attached, with a `warning` — not an error.
+- `cite text <id> --supplement <n>` reads one back (ordinals come from
+  `cite get <id>`); `cite extract <id> --supplement <n>` re-extracts it.
+
 See `README.md` for the full command reference.

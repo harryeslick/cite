@@ -11,100 +11,77 @@ mechanical work (search, validate, hash, rename, write the record). Keep tokens
 low by letting the tool do the deterministic parts and reading its JSON output.
 
 Run commands as `cite ...` if installed globally (`uv tool install`), or
-`uv run cite ...` from this repo's root in dev. The examples below use `uv run`;
-drop that prefix when `cite` is on your PATH. **Every command prints one JSON
-object** with a `status` field — read it and follow `suggested_next` / `hint`.
+`uv run cite ...` from this repo's root in dev. The examples below use bare
+`cite`; add the `uv run` prefix if it is not on your PATH. **Every command
+prints one JSON object** with a `status` field — read it and follow
+`suggested_next` / `hint`.
 
-## The contract
-Run `uv run cite guide --json` once to load the full command list, the 7
-allowed citation types, and the required fields for each. Do this if you are
-unsure of a flag or which fields a type needs.
+## The contract lives in the tool, not here
 
-## Standard workflow (adding a file)
-1. **Confirm the library exists**: writing commands (`add`, `add-url`,
-   `prepare`) require a `cite.toml` marker. If the tool reports no initialized
-   library, confirm the intended path with the user, then run
-   `uv run cite init --library <path> --yes`. Never let a typo create a stray
-   library implicitly.
-2. **Identify**: start with `uv run cite peek <file>` — it reads embedded PDF
-   metadata and any printed DOI in milliseconds, and for most publisher PDFs
-   that is enough to go straight to `search`. When peek comes back thin (no DOI,
-   no title, a scanned or untagged report), use `uv run cite prepare <file>`:
-   it extracts markdown once into a staging cache, returns the markdown `head`,
-   and a later `add` adopts the cached extraction.
-3. **Search**: if a DOI was found, `uv run cite search --doi <doi>`. Otherwise
-   `uv run cite search --title "<title>" [--author <surname>] [--year <yyyy>]`.
-4. **Add the match**: pick the best candidate from `.candidates`, then pipe just
-   that one object: `echo '<candidate-json>' | uv run cite add <file> --csl -`.
-   The tool validates, content-hashes (dedup), renames the file, and writes the
-   record. DOI lookup can also be filed with `uv run cite add <file> --doi <doi>`.
-   A `status: duplicate` means the same bytes are already filed.
-5. **No database match** (internal reports, etc.): pick the right type, and add
-   manually. Re-check the prepared markdown head / peek output before asking the
-   user. If required fields are missing the tool tells you which:
-   `uv run cite add <file> --manual --type <cite_type> --field title=... --field author="Smith, Jane; Lee, Kim" --field issued=2023 ...`
-   - `author` is `Family, Given; Family2, Given2` (a comma-less entry becomes an
-     organisational/literal name). `issued`/`accessed` are `YYYY[-MM[-DD]]`.
-   - On `status: missing_fields`, ask the **user** for exactly the `missing`
-     fields, get their confirmation, then re-run with those `--field`s added.
-     Do not invent bibliographic facts — confirm them.
-6. **Bare URL**: use `uv run cite add-url <url>` only when the user has a web
-   address rather than a local file. HTML pages are snapshotted as `web-site`
-   records. PDFs are downloaded and returned with `status: downloaded`; continue
-   with the normal document workflow using the returned path.
+**Run `cite guide --json` before your first write command in a session.** It is
+generated from the installed version and is the authority on the command list,
+the allowed citation types, the required fields for each, flag behaviour,
+dedup tiers, extraction engines, and library resolution. This file does not
+repeat those — where it seems to disagree with `guide`, `guide` is right.
 
-## The 7 citation types
-`journal-article`, `book`, `book-section`, `web-site`, `trial-report`,
-`data-set`, `other-report`. (See `cite guide` for required fields per type.)
+## How to think about the work
 
-## Duplicate / correction rules
-- `status: duplicate` means identical file bytes are already filed — stop.
-- `status: near_duplicate` means the same work may already be filed. You may
-  resolve `definitive` / `strong` matches yourself; show `possible` matches to
-  the user before re-running with `--force`.
-- Use `uv run cite update <id> --field key=value ...` to fix stored metadata
-  instead of remove + re-add. Changing id-bearing fields may re-stem the bundle.
-- Record ids are emitted as `cite:<stem>`; commands accept either that namespaced
-  id or the bare stem.
+- **Never invent bibliographic facts.** On `status: missing_fields`, ask the
+  **user** for exactly the fields listed in `missing`, confirm, then re-run.
+  Re-read the peek/prepare output first — the answer is often already there.
+- **Never create a library implicitly.** `status: no_library` means confirm the
+  intended path with the user before `cite init`. A typo must not spin up a
+  stray library.
+- **Duplicates are yours to triage.** `definitive` / `strong` near-duplicate
+  matches you may resolve yourself; show `possible` matches to the user before
+  re-running with `--force`.
+- **Fix, don't re-add.** Use `cite update` to correct stored metadata rather
+  than remove + add.
 
-## Other commands
-- `uv run cite list` / `uv run cite get <id>` — browse the library.
-- `uv run cite doctor` — health-check records, provenance, source files, and
-  orphan bundles. `--self` checks the *install* instead (extras present,
-  `cite-mcp` startable, which library resolved and how) — run it whenever a
-  result looks impossible.
-- `uv run cite remove <id>` — remove a record and its whole bundle.
-- `uv run cite export --format csl|bibtex|pandoc` — emit standard formats.
-- `uv run cite extract <id>` — full markdown for a stored reference.
-  `--engine auto` (default) probes the text layer: a born-digital PDF is read
-  through its own text in well under a minute even for a book, and only a scan
-  falls through to `--engine vlm` (minutes — background that case). Never force
-  `vlm` on a document that already has a text layer.
-  Add `--engine text --enrich formula` for a maths-heavy paper, or whenever the
-  extracted markdown contains `<!-- formula-not-decoded -->` — that placeholder
-  means docling found equations and dropped them, so the markdown you are reading
-  is missing the content the paper is about. It is slow — a 20-page paper with 15
-  equations took 10 minutes against 12 seconds without it, plus a ~600 MB
-  first-run download — so background it, and never add it to a document with no
-  maths in it.
+## Workflow skeleton (adding a file)
 
-**No `--library` on `search` or `validate`** — they error if given one. `search`
-queries the network; `validate` checks a CSL-JSON record on stdin against a
-`--type` and takes no record id.
+1. **Peek first** — `cite peek <file>` is milliseconds and enough for most
+   publisher PDFs. Branch: if it comes back thin (no DOI, no title, a scan or
+   untagged report), use `cite prepare <file>` instead and read the markdown
+   head. A later `add` adopts the cached extraction, so this costs nothing extra.
+2. **Search** — by `--doi` if you have one, else `--title` (+ `--author`,
+   `--year`).
+3. **Add** — pipe the single best candidate: `echo '<candidate-json>' | cite add <file> --csl -`.
+   Branch: no database match → `cite add <file> --manual --type ... --field ...`.
+4. **Bare URL, no local file** — `cite add-url <url>`. An HTML page becomes a
+   `web-site` record; a PDF comes back as `status: downloaded` with a path,
+   which re-enters this workflow at step 2.
 
-Library location: `--library <path>`, else `$CITE_LIBRARY`, else the nearest
-`cite.toml` found by walking *up* from the current directory. Every command,
-reads included, returns `status: no_library` rather than an empty result when
-the resolved path has no `cite.toml`. Each reference is a self-contained bundle
-dir `<id>/` (record + original file + any extracted markdown). A prepared file's
-staged extraction is adopted by a later add of the same bytes, so extraction is
-not repeated.
+## Cost and latency — choose the cheap path
 
-## Optional: full-text markdown
-- `cite prepare <file>` extracts markdown before adding, for citation context.
-- `cite extract <id>` converts a stored reference to full markdown locally
-  (Docling VLM); output goes to `<id>/<id>.md` (+ `<id>_artifacts/`). Needs the
-  `extract` extra — on `status: error` with an install hint, tell the user to
-  install `cite[extract]`; never treat its absence as a failure of the core
-  workflow.
-- `cite text <id> [--path-only]` prints the extracted markdown (or its path).
+- `peek` ≪ `prepare`. Don't extract a document whose metadata you already have.
+- `cite extract --engine auto` (the default) reads a born-digital PDF through
+  its own text layer in seconds. Only a scan falls through to the vision model,
+  which takes minutes — **background that case** and poll `cite text <id>
+  --path-only`. Never force `--engine vlm` on a document that has a text layer:
+  it is slower *and* worse.
+- `--enrich formula` costs minutes plus a ~600 MB first-run download. Use it
+  only when the extracted markdown contains `<!-- formula-not-decoded -->` —
+  that placeholder means the equations the paper is about are missing. Never add
+  it to a document with no maths in it.
+
+## Supplementary material belongs to its paper
+
+Supporting information, supplementary tables and extended methods attach to an
+**existing** reference: `cite add-supplement <id> <file> --label "<l>"`, read
+back with `cite text <id> --supplement <n>`.
+
+**Never `cite add` these as references of their own.** They have no citation
+metadata, cannot produce a well-formed id, and would appear in `list` and
+`export` as citable works.
+
+## If a result looks impossible
+
+Run `cite doctor --self` — it reports which extras are installed, whether
+`cite-mcp` can start, and which library resolved and how. An empty result is
+always an empty library, never a wrong path; a wrong path returns
+`status: no_library`.
+
+Full-markdown extraction needs the `extract` extra. On `status: error` with an
+install hint, tell the user to install `cite[extract]` — never treat its absence
+as a failure of the core workflow.

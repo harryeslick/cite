@@ -23,7 +23,8 @@ _COMMANDS = [
     {"name": "update", "summary": "Amend a stored record's metadata in place: --field key=value sets/replaces, --remove-field deletes, --type changes the cite_type. Re-validates and preserves the document/hash/provenance; editing an id-bearing field (title/author/year) re-stems the whole bundle (response reports `renamed`). Use instead of remove + re-add to fix a wrong field."},
     {"name": "remove", "summary": "Remove a record from the library (deletes the whole reference bundle)."},
     {"name": "extract", "summary": "Extract full markdown for a reference via a local Docling pipeline (optional 'extract' extra). `--engine auto` (default) reads a born-digital PDF through its own text layer in seconds; only a scan falls through to the vision model, which is slow/blocking — background that case and poll `cite text`."},
-    {"name": "text", "summary": "Print a reference's extracted markdown, or its path with --path-only."},
+    {"name": "add-supplement", "summary": "Attach supplementary material (supporting information, data tables, extended methods) to an EXISTING reference: `cite add-supplement <id> <file>`. Do NOT `cite add` these as separate references — they have no citation metadata and would pollute list/export. Stored inside the parent's bundle as `<id>_suppNN.<ext>` and listed under `_provenance.supplements`; travels with the parent through update/pull/remove. Text is extracted where possible (documents via Docling, .csv/.xlsx as markdown tables, anything else stored as-is with a `warning`, never a failure)."},
+    {"name": "text", "summary": "Print a reference's extracted markdown, or its path with --path-only. `--supplement N` prints an attached supplementary file's markdown instead (ordinals come from `_provenance.supplements` in `cite get <id>`)."},
     {"name": "export", "summary": "Export library records as CSL-JSON or another format."},
     {"name": "guide", "summary": "Print this agent usage contract (add --json for machine-readable form)."},
 ]
@@ -91,8 +92,14 @@ _NOTES = (
     "form); get/remove accept either the namespaced id or the bare stem. Every response "
     "envelope carries a `spec` field naming the protocol version (see 'spec'). "
     "Each reference is a self-contained bundle directory `<id>/` holding the record "
-    "(`<id>.json`), the original file (`<id>.<ext>`), and any extracted markdown "
-    "(`<id>.md` + `<id>_artifacts/`). Full-markdown extraction is an "
+    "(`<id>.json`), the original file (`<id>.<ext>`), any extracted markdown "
+    "(`<id>.md` + `<id>_artifacts/`), and any supplementary material "
+    "(`<id>_suppNN.<ext>` + `<id>_suppNN.md`). "
+    "SUPPLEMENTARY MATERIAL belongs to its paper, not beside it: attach it with "
+    "`cite add-supplement <id> <file>` and read it with `cite text <id> --supplement N`. "
+    "Never `cite add` a supporting-information file as its own reference — it has no "
+    "citation metadata, so it cannot produce a well-formed id, and it would show up in "
+    "`list` and `export` as if it were a citable work. Full-markdown extraction is an "
     "optional, fully-local feature requiring the `extract` extra (Docling); the rest of "
     "cite works without it. It runs either BEFORE add (`cite prepare <file>`, for citation "
     "context) or AFTER (`cite extract <id>`, for a stored reference) — same engine, and the "

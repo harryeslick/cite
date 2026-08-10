@@ -26,6 +26,8 @@ mcp = ["mcp>=1.2"]
 # without it docling falls back to the much slower Transformers path.
 extract = [
     "docling>=2.0",
+    # Tabular supplements (.xlsx). Tiny, pure-Python; CSV/TSV need nothing at all.
+    "openpyxl>=3.1",
     "mlx-vlm; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 # Convenience: install every optional feature in one shot.

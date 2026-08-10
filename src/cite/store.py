@@ -8,6 +8,8 @@ Layout (per-entity *bundle* — see SUITE.md §5.1)::
       <id>/<id>.<ext>           # the renamed original document file
       <id>/<id>.md              # (optional) extracted full markdown
       <id>/<id>_artifacts/      # (optional) referenced image artifacts
+      <id>/<id>_suppNN.<ext>    # (optional) supplementary material
+      <id>/<id>_suppNN.md       # (optional) its extracted markdown
 
 A reference is a *self-contained directory*: everything about it — record,
 original file, derived markdown, image artifacts — lives under ``<root>/<id>/``.
@@ -19,6 +21,7 @@ which is already colon-free and filesystem-safe.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import tomllib
 from datetime import datetime, timezone
@@ -68,6 +71,49 @@ class Library:
         links resolve in place.
         """
         return self.entry_dir(record_id) / f"{record_id}_artifacts"
+
+    # -- Supplementary material (see `cite add-supplement`) -------------- #
+    #
+    # A supplement is an attachment of its parent reference, not a reference of
+    # its own: it has no citation metadata and so cannot produce an id. It lives
+    # in the parent's bundle under the stem `<id>_suppNN`, which keeps the
+    # one-stem-per-file convention (and therefore Docling's `<stem>_artifacts`
+    # image links) intact, and means the whole-directory operations — remove,
+    # copy_bundle_to, rename_bundle — carry supplements along for free.
+
+    @staticmethod
+    def supplement_stem(record_id: str, n: int) -> str:
+        """The stem shared by one supplement's files: ``<id>_supp01``."""
+        return f"{record_id}_supp{n:02d}"
+
+    def supplement_path(self, record_id: str, n: int, ext: str) -> Path:
+        """Path to a stored supplement file: ``<root>/<id>/<id>_suppNN<ext>``."""
+        ext = ext if ext.startswith(".") or not ext else f".{ext}"
+        return self.entry_dir(record_id) / f"{self.supplement_stem(record_id, n)}{ext}"
+
+    def supplement_text_path(self, record_id: str, n: int) -> Path:
+        """Path to a supplement's extracted markdown: ``<id>/<id>_suppNN.md``."""
+        return self.entry_dir(record_id) / f"{self.supplement_stem(record_id, n)}.md"
+
+    def supplement_artifacts_dir(self, record_id: str, n: int) -> Path:
+        """A supplement's image artifacts: ``<id>/<id>_suppNN_artifacts/``."""
+        return self.entry_dir(record_id) / f"{self.supplement_stem(record_id, n)}_artifacts"
+
+    def clear_supplement_text(self, record_id: str, n: int) -> None:
+        """Remove one supplement's markdown + artifacts (mirrors :meth:`clear_text`)."""
+        md = self.supplement_text_path(record_id, n)
+        if md.exists():
+            md.unlink()
+        artifacts = self.supplement_artifacts_dir(record_id, n)
+        if artifacts.exists():
+            shutil.rmtree(artifacts)
+
+    def read_supplement_text(self, record_id: str, n: int) -> str:
+        """Return a supplement's markdown. Raise FileNotFoundError if not extracted."""
+        path = self.supplement_text_path(record_id, n)
+        if not path.exists():
+            raise FileNotFoundError(f"No extracted markdown for supplement {n} of {record_id!r}")
+        return path.read_text(encoding="utf-8")
 
     # ------------------------------------------------------------------ #
     # Initialisation
@@ -221,11 +267,15 @@ class Library:
         Used by ``cite update`` when an edit changes an id-bearing field (year,
         author, or title): the deterministic id is recomputed and no longer
         matches the directory name, so the bundle must be renamed to stay
-        consistent. Because the id is also the stem of every file in the bundle,
-        this moves the directory *and* re-stems each contained file —
-        ``<old>.json`` → ``<new>.json``, the stored document, ``<old>.md``, and
-        ``<old>_artifacts/`` — then rewrites the markdown's relative image links
+        consistent. Because the id is the *prefix* of every name in the bundle,
+        this moves the directory *and* re-stems every child — ``<old>.json``, the
+        stored document, ``<old>.md``, ``<old>_artifacts/``, and each supplement's
+        ``<old>_suppNN.*`` — then rewrites every markdown's relative image links
         (``<old>_artifacts`` → ``<new>_artifacts``) so they resolve in place.
+
+        The rename is a prefix substitution rather than a match on ``<old>.``
+        precisely so supplements travel with their parent; a narrower rule would
+        leave them behind under a stem that no longer names anything.
 
         The content hash is unchanged by a metadata edit, so the ``_hash6``
         suffix is stable across the rename and dedup identity is preserved.
@@ -249,22 +299,26 @@ class Library:
         new_doc_filename = ""
         for child in sorted(new_dir.iterdir()):
             name = child.name
-            if name == f"{old_id}_artifacts":
-                child.rename(new_dir / f"{new_id}_artifacts")
-            elif name.startswith(f"{old_id}."):
-                suffix = name[len(old_id):]  # includes the leading dot, e.g. ".pdf"
-                child.rename(new_dir / f"{new_id}{suffix}")
-                # Anything that isn't the record or the markdown is the document.
-                if suffix not in (".json", ".md"):
-                    new_doc_filename = f"{new_id}{suffix}"
+            if not name.startswith(old_id):
+                continue
+            rest = name[len(old_id):]  # ".pdf", "_artifacts", "_supp01.pdf", …
+            child.rename(new_dir / f"{new_id}{rest}")
+            # The document is the one child named exactly `<id>.<ext>` and is
+            # neither the record nor the markdown. Supplements share the id as a
+            # prefix but not as a whole stem, so `_supp01.pdf` is excluded here.
+            if rest.startswith(".") and rest not in (".json", ".md"):
+                new_doc_filename = f"{new_id}{rest}"
 
-        # Rewrite the markdown's relative artifact links to the new stem.
-        md = self.text_path(new_id)
-        if md.exists():
-            text = md.read_text(encoding="utf-8").replace(
-                f"{old_id}_artifacts", f"{new_id}_artifacts"
-            )
-            md.write_text(text, encoding="utf-8")
+        # Rewrite relative artifact links in *every* markdown (the reference's own
+        # and each supplement's), since each points at its own `_artifacts` dir.
+        # Anchoring on the `…_artifacts` tail keeps the substitution to link
+        # targets — the old id appearing in prose is left alone.
+        link = re.compile(re.escape(old_id) + r"((?:_supp\d+)?_artifacts)")
+        for md in sorted(new_dir.glob("*.md")):
+            text = md.read_text(encoding="utf-8")
+            rewritten = link.sub(lambda m: f"{new_id}{m.group(1)}", text)
+            if rewritten != text:
+                md.write_text(rewritten, encoding="utf-8")
 
         return new_doc_filename
 

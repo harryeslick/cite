@@ -131,7 +131,7 @@ def _vlm_converter(vlm_model: str):
     )
 
 
-def _text_converter(probe: dict, enrich: tuple[str, ...] = ()):
+def _text_converter(probe: dict | None, enrich: tuple[str, ...] = ()):
     """A converter that reads the document's own text layer.
 
     Layout and table-structure models still run — they are what turn a flat text
@@ -140,7 +140,9 @@ def _text_converter(probe: dict, enrich: tuple[str, ...] = ()):
 
     OCR is enabled only when the probe actually saw pages without text (a mostly
     digital document with a few scanned inserts, which would otherwise come out
-    with holes in it). Leaving it on unconditionally costs a ~25 MB model
+    with holes in it). ``probe`` is None for non-PDF input, which has no scanned
+    pages by construction — no probe, no OCR. Leaving OCR on unconditionally
+    costs a ~25 MB model
     download on first run and an engine init on every run, to read pages that we
     have already established do not exist.
 
@@ -154,7 +156,7 @@ def _text_converter(probe: dict, enrich: tuple[str, ...] = ()):
     from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
 
     pipeline_options = PdfPipelineOptions()
-    pipeline_options.do_ocr = probe.get("pages_without_text", 0) > 0
+    pipeline_options.do_ocr = bool(probe) and probe.get("pages_without_text", 0) > 0
     pipeline_options.do_table_structure = True
     # Same reason as the VLM path: REFERENCED export needs rendered images.
     for attr in ("generate_picture_images", "generate_page_images"):
@@ -218,9 +220,20 @@ def extract_to_markdown(
         raise ValueError(f"unknown engine {engine!r}; choose one of {list(ENGINES)}")
     enrich = normalize_enrich(enrich)
 
-    probe = probe_text_layer(src_file)
-    if engine == AUTO:
-        engine = TEXT if probe["verdict"] == TEXT else VLM
+    # The text-layer probe reads PDFs, and reports `scanned` for anything it
+    # cannot open as one. That default is right for a damaged PDF and wrong for
+    # every other format: a .docx or .txt has no rasterized pages to look at, so
+    # routing one to the vision model spends minutes to read text that was handed
+    # over losslessly. Only PDFs get probed; everything else is text by
+    # construction.
+    if src_file.suffix.lower() == ".pdf":
+        probe = probe_text_layer(src_file)
+        if engine == AUTO:
+            engine = TEXT if probe["verdict"] == TEXT else VLM
+    else:
+        probe = None
+        if engine == AUTO:
+            engine = TEXT
 
     # Fail rather than drop the request: writing markdown whose provenance
     # claims enrichment that never ran is worse than an error the caller can
@@ -229,7 +242,8 @@ def extract_to_markdown(
         raise ValueError(
             f"enrichment ({', '.join(enrich)}) is only available on the text "
             f"engine; this document resolved to the vlm engine "
-            f"(probe verdict: {probe['verdict']}). Re-run with --engine text to "
+            f"(probe verdict: {probe['verdict'] if probe else 'not a PDF'}). "
+            f"Re-run with --engine text to "
             f"force the text pipeline, or drop --enrich."
         )
 

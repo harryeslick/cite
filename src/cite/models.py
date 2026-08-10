@@ -126,6 +126,52 @@ class Extraction(BaseModel):
     n_images: int
 
 
+SupplementKind = Literal["document", "tabular", "binary"]
+
+# Which supplements can become markdown, and by which route. `binary` is not a
+# failure — a supplementary `.zip` of raw data is still worth keeping beside the
+# paper, it just has no text to extract, so attaching it must never error.
+DOCUMENT_SUFFIXES: frozenset[str] = frozenset(
+    {".pdf", ".docx", ".pptx", ".html", ".htm", ".md", ".txt"}
+)
+TABULAR_SUFFIXES: frozenset[str] = frozenset({".csv", ".tsv", ".xlsx", ".xls"})
+
+
+def supplement_kind(filename: str) -> SupplementKind:
+    """Classify a supplement by suffix — which extraction route it takes, if any."""
+    suffix = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if suffix in DOCUMENT_SUFFIXES:
+        return "document"
+    if suffix in TABULAR_SUFFIXES:
+        return "tabular"
+    return "binary"
+
+
+class Supplement(BaseModel):
+    """One supplementary file attached to a reference (see `cite add-supplement`).
+
+    Supplementary material — supporting-information PDFs, data tables, extended
+    methods — belongs *to* a paper rather than standing beside it: it carries no
+    citation metadata of its own and so can produce no id. It is therefore stored
+    in the parent's bundle under `<id>_suppNN` and described here, not promoted to
+    a reference of its own where it would pollute `list` and `export`.
+
+    `n` is a 1-based ordinal assigned at attach time and stable for the life of
+    the record — it is the NN in the filename, so renumbering would orphan files.
+    """
+
+    n: int
+    label: str | None = None  # e.g. "Supporting Information S1"; user-supplied
+    original_filename: str
+    filename: str  # "<id>_supp01.pdf", relative to the bundle directory
+    file_hash: str  # full SHA-256 hex; the within-bundle re-attach guard
+    kind: SupplementKind
+    date_added: str  # ISO-8601 UTC
+    # Reuses the reference-level model: a supplement's markdown has exactly the
+    # same staleness question (which extractor, which engine, from which bytes).
+    extraction: Extraction | None = None  # None for `binary`, or a failed extract
+
+
 class Provenance(BaseModel):
     """Custom metadata tracked alongside the standard CSL fields."""
 
@@ -137,6 +183,9 @@ class Provenance(BaseModel):
     source: Literal["crossref", "datacite", "openalex", "manual", "web"]
     source_id: str | None = None  # DOI / OpenAlex ID, when applicable
     extraction: Extraction | None = None  # set by `cite extract`
+    # None (not []) on records predating the feature, so `exclude_none` keeps the
+    # key out of a record with no supplements and old records round-trip unchanged.
+    supplements: list[Supplement] | None = None  # set by `cite add-supplement`
 
 
 PROVENANCE_KEY = "_provenance"

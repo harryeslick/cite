@@ -84,6 +84,17 @@ def _check_bundle(lib: Library, record_id: str) -> list[dict]:
             _problem(record_id, MISSING_FILE, f"source file absent: {new_filename}")
         )
 
+    # Same check for each attached supplement: the record claims the file is in
+    # the bundle, so a claim it can't back is exactly the MISSING_FILE class.
+    for supplement in provenance.get("supplements") or []:
+        filename = supplement.get("filename")
+        if filename and not (lib.entry_dir(record_id) / filename).exists():
+            problems.append(
+                _problem(
+                    record_id, MISSING_FILE, f"supplement file absent: {filename}"
+                )
+            )
+
     return problems
 
 

@@ -316,3 +316,55 @@ class TestLibraryResolution:
         # One line, not a list of every ancestor tried.
         assert isinstance(err["searched"], str)
         assert str(tmp_path) in err["searched"]
+
+
+class TestRenameBundle:
+    """`cite update` re-stems a whole bundle when an id-bearing field changes.
+
+    Every file in a bundle carries the id as its stem, so the rename must reach
+    all of them — including supplements (``<id>_suppNN.*``), which are not named
+    ``<id>.<ext>`` and so are easy to miss.
+    """
+
+    def _bundle(self, tmp_path: Path, old: str) -> Library:
+        lib = Library(tmp_path / "lib")
+        lib.init()
+        entry = lib.entry_dir(old)
+        entry.mkdir(parents=True)
+        (entry / f"{old}.json").write_text(json.dumps(_make_record()), encoding="utf-8")
+        (entry / f"{old}.pdf").write_bytes(b"%PDF-paper")
+        (entry / f"{old}.md").write_text(f"![f](./{old}_artifacts/image_0.png)", encoding="utf-8")
+        (entry / f"{old}_artifacts").mkdir()
+        (entry / f"{old}_supp01.pdf").write_bytes(b"%PDF-supp")
+        (entry / f"{old}_supp01.md").write_text(
+            f"![f](./{old}_supp01_artifacts/image_0.png)", encoding="utf-8"
+        )
+        (entry / f"{old}_supp01_artifacts").mkdir()
+        return lib
+
+    def test_rename_restems_supplements_too(self, tmp_path: Path):
+        old, new = "2020-smith-old_aaaaaa", "2021-smith-new_aaaaaa"
+        lib = self._bundle(tmp_path, old)
+
+        new_doc = lib.rename_bundle(old, new)
+
+        entry = lib.entry_dir(new)
+        assert not lib.entry_dir(old).exists()
+        assert sorted(p.name for p in entry.iterdir()) == sorted([
+            f"{new}.json", f"{new}.pdf", f"{new}.md", f"{new}_artifacts",
+            f"{new}_supp01.pdf", f"{new}_supp01.md", f"{new}_supp01_artifacts",
+        ])
+        # The supplement PDF must not be mistaken for the reference's document.
+        assert new_doc == f"{new}.pdf"
+
+    def test_rename_rewrites_links_in_every_markdown(self, tmp_path: Path):
+        old, new = "2020-smith-old_aaaaaa", "2021-smith-new_aaaaaa"
+        lib = self._bundle(tmp_path, old)
+
+        lib.rename_bundle(old, new)
+
+        entry = lib.entry_dir(new)
+        assert (entry / f"{new}.md").read_text() == f"![f](./{new}_artifacts/image_0.png)"
+        assert (entry / f"{new}_supp01.md").read_text() == (
+            f"![f](./{new}_supp01_artifacts/image_0.png)"
+        )

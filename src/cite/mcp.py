@@ -441,6 +441,7 @@ def extract(
     engine: str = "auto",
     vlm_model: str = "granite_docling",
     enrich: str = "",
+    supplement: int | None = None,
     library: str | None = None,
 ) -> str:
     """Extract full markdown for a document via a local Docling pipeline.
@@ -476,6 +477,9 @@ def extract(
     **Standalone mode** (when `id` is a path to an existing file): no library
     needed. Output markdown + artifacts are written beside the input file.
 
+    `supplement: N` re-extracts the Nth attached supplementary file instead of
+    the reference's own document — use it to redo a supplement with `enrich`.
+
     Only the `vlm` engine is slow. It can take minutes, blocks this call, and
     cannot be backgrounded over MCP — so when a scan needs it, finish all other
     cite work first, or run the `cite extract <id> --engine vlm` CLI as a
@@ -484,7 +488,7 @@ def extract(
     from pathlib import Path as _Path
 
     candidate = _Path(id)
-    if candidate.suffix:
+    if candidate.suffix and supplement is None:
         return _ok(
             ops.extract_file(
                 candidate, engine=engine, vlm_model=vlm_model, enrich=enrich
@@ -494,20 +498,71 @@ def extract(
     err = ops.require_initialized(lib)
     if err is not None:
         return _ok(err)
-    return _ok(ops.extract(lib, id, engine=engine, vlm_model=vlm_model, enrich=enrich))
+    return _ok(
+        ops.extract(
+            lib, id, engine=engine, vlm_model=vlm_model, enrich=enrich,
+            supplement=supplement,
+        )
+    )
 
 
 @mcp.tool()
-def text(id: str, path_only: bool = False, library: str | None = None) -> str:
-    """Return a reference's extracted markdown (or its path with path_only=True).
+def add_supplement(
+    id: str,
+    file: str,
+    label: str | None = None,
+    engine: str = "auto",
+    vlm_model: str = "granite_docling",
+    enrich: str = "",
+    library: str | None = None,
+) -> str:
+    """Attach supplementary material to an existing reference and extract its text.
 
-    Returns a JSON 'not_found' envelope if the reference hasn't been extracted yet.
+    Use this for a paper's supporting information, supplementary data tables, or
+    extended methods — anything published *with* a paper rather than as its own
+    citable work. Do NOT `add` these as separate references: they have no citation
+    metadata of their own, and adding them pollutes `list` and `export`. They are
+    stored inside the parent's bundle and travel with it through update/pull/remove.
+
+    Text is extracted where possible — PDFs and office documents through Docling,
+    `.csv`/`.xlsx` converted to markdown tables, everything else (e.g. a `.zip`)
+    stored without markdown. A file that cannot be read is still attached and the
+    response carries a `warning`; re-attaching the same bytes returns 'duplicate'.
+
+    Read the result with `text(id, supplement=N)`; the ordinals are listed under
+    `_provenance.supplements` in `get(id)`.
     """
     lib = ops.resolve_library(_path(library))
     err = ops.require_initialized(lib)
     if err is not None:
         return _ok(err)
-    result = ops.text(lib, id, path_only=path_only)
+    return _ok(
+        ops.add_supplement(
+            lib, id, _path(file), label=label,
+            engine=engine, vlm_model=vlm_model, enrich=enrich,
+        )
+    )
+
+
+@mcp.tool()
+def text(
+    id: str,
+    path_only: bool = False,
+    supplement: int | None = None,
+    library: str | None = None,
+) -> str:
+    """Return a reference's extracted markdown (or its path with path_only=True).
+
+    Returns a JSON 'not_found' envelope if the reference hasn't been extracted yet.
+
+    `supplement: N` returns an attached supplementary file's markdown instead;
+    `get(id)` lists what is attached under `_provenance.supplements`.
+    """
+    lib = ops.resolve_library(_path(library))
+    err = ops.require_initialized(lib)
+    if err is not None:
+        return _ok(err)
+    result = ops.text(lib, id, path_only=path_only, supplement=supplement)
     if result.get("status") == "not_found":
         return _ok(result)
     # On a hit the markdown (or its path) is the payload, not an envelope — return

@@ -40,10 +40,12 @@ from cite.models import (
     PROVENANCE_KEY,
     Extraction,
     Provenance,
+    Supplement,
     cite_type_from_csl,
     csl_type_for,
     genre_for,
     issued_year,
+    supplement_kind,
 )
 from cite.naming import (
     build_filename,
@@ -942,6 +944,19 @@ def update(
         extraction = prov.get("extraction")
         if isinstance(extraction, dict) and extraction.get("markdown_path"):
             extraction["markdown_path"] = f"{new_stem}/{new_stem}.md"
+        # Supplements are named after the parent stem too, so the record's
+        # pointers into the bundle go stale for exactly the same reason.
+        for supplement in _supplements(prov):
+            n = supplement.get("n")
+            old_name = supplement.get("filename", "")
+            if n is None or not old_name:
+                continue
+            supplement["filename"] = f"{lib.supplement_stem(new_stem, n)}{Path(old_name).suffix}"
+            supp_extraction = supplement.get("extraction")
+            if isinstance(supp_extraction, dict) and supp_extraction.get("markdown_path"):
+                supp_extraction["markdown_path"] = (
+                    f"{new_stem}/{lib.supplement_stem(new_stem, n)}.md"
+                )
 
     record[PROVENANCE_KEY] = prov
     lib.write_record(new_stem, record)
@@ -970,6 +985,259 @@ def update(
     }
 
 
+# --------------------------------------------------------------------------- #
+# Supplementary material
+#
+# A supplement belongs to a paper rather than standing beside it, so it is stored
+# inside the parent's bundle and described in `_provenance.supplements` — never
+# promoted to a reference of its own. That choice is what makes `remove`, `pull`,
+# central sync and `rename_bundle` carry supplements along with no new code: they
+# are all whole-directory operations.
+# --------------------------------------------------------------------------- #
+
+
+def _supplements(prov: dict) -> list[dict]:
+    """The record's supplement list (``[]`` when absent — pre-feature records)."""
+    return prov.get("supplements") or []
+
+
+def _find_supplement(prov: dict, n: int) -> dict | None:
+    return next((s for s in _supplements(prov) if s.get("n") == n), None)
+
+
+def add_supplement(
+    lib: Library,
+    id: str,
+    file: Path,
+    *,
+    label: str | None = None,
+    engine: str = "auto",
+    vlm_model: str = "granite_docling",
+    enrich=(),
+) -> dict:
+    """Attach a supplementary file to an existing reference and extract its text.
+
+    Much narrower than :func:`commit_file`: a supplement carries no citation
+    metadata, so there is nothing to validate and no near-duplicate question to
+    ask — only "are these bytes already attached here?".
+
+    The file is stored as ``<id>/<id>_suppNN<ext>`` and, when its type allows,
+    extracted to ``<id>/<id>_suppNN.md`` (docling for documents, the tabular
+    backend for spreadsheets). **Extraction failure is not attach failure**: a
+    supplement that cannot be read is still worth keeping beside the paper, so
+    the file stays attached with ``extraction: null`` and the envelope carries a
+    ``warning``. Re-attaching identical bytes is a no-op ``duplicate``.
+    """
+    stem = local_id(id)
+    try:
+        record = lib.read_record(stem)
+    except FileNotFoundError:
+        return {"status": "not_found", "id": namespaced_id(stem)}
+
+    if not file.exists():
+        return {"status": "error", "message": f"file not found: {file}"}
+
+    prov = record.get(PROVENANCE_KEY, {})
+    existing = _supplements(prov)
+
+    file_hash = content_hash(file)
+    already = next((s for s in existing if s.get("file_hash") == file_hash), None)
+    if already:
+        return {
+            "status": "duplicate",
+            "id": namespaced_id(stem),
+            "n": already["n"],
+            "message": "this file is already attached to this reference",
+        }
+
+    n = max((s.get("n", 0) for s in existing), default=0) + 1
+    kind = supplement_kind(file.name)
+    filename = f"{lib.supplement_stem(stem, n)}{file.suffix.lower()}"
+    lib.store_file(file, stem, filename)
+
+    extraction = None
+    warning = None
+    if kind != "binary":
+        md_path = lib.supplement_text_path(stem, n)
+        lib.clear_supplement_text(stem, n)  # idempotent: wipe any prior output
+        result, error = _run_extraction(
+            lib.entry_dir(stem) / filename,
+            md_path,
+            engine=engine,
+            vlm_model=vlm_model,
+            enrich=enrich,
+            tabular=(kind == "tabular"),
+            title=label or file.name,
+        )
+        if error is not None:
+            # Keep the file, drop the text. The user can retry with
+            # `cite extract <id> --supplement N` once the cause is fixed.
+            warning = error["message"]
+        else:
+            extraction = _extraction_record(
+                result,
+                source_hash=file_hash,
+                markdown_path=f"{stem}/{lib.supplement_stem(stem, n)}.md",
+            )
+
+    supplement = Supplement(
+        n=n,
+        label=label,
+        original_filename=file.name,
+        filename=filename,
+        file_hash=file_hash,
+        kind=kind,
+        date_added=_now_iso(),
+        extraction=extraction,
+    )
+    prov["supplements"] = existing + [supplement.model_dump(exclude_none=True)]
+    record[PROVENANCE_KEY] = prov
+    lib.write_record(stem, record)
+    _sync_to_central(lib, stem)
+
+    envelope = {
+        "status": "ok",
+        "id": namespaced_id(stem),
+        "n": n,
+        "kind": kind,
+        "filename": filename,
+        "markdown_path": extraction.markdown_path if extraction else None,
+    }
+    if warning:
+        envelope["warning"] = warning
+    return envelope
+
+
+def _extract_supplement(
+    lib: Library,
+    stem: str,
+    record: dict,
+    prov: dict,
+    n: int,
+    *,
+    engine: str,
+    vlm_model: str,
+    enrich,
+) -> dict:
+    """Re-extract one supplement's markdown in place (the `--supplement N` path)."""
+    entry = _find_supplement(prov, n)
+    if entry is None:
+        return {
+            "status": "not_found",
+            "id": namespaced_id(stem),
+            "n": n,
+            "message": f"no supplement {n} on this reference",
+        }
+    if entry["kind"] == "binary":
+        return {
+            "status": "error",
+            "id": namespaced_id(stem),
+            "n": n,
+            "message": f"supplement {n} ({entry['original_filename']}) has no extractable text",
+        }
+
+    src = lib.entry_dir(stem) / entry["filename"]
+    if not src.exists():
+        return {
+            "status": "error",
+            "id": namespaced_id(stem),
+            "n": n,
+            "message": "stored supplement file not found",
+        }
+
+    lib.clear_supplement_text(stem, n)
+    result, error = _run_extraction(
+        src,
+        lib.supplement_text_path(stem, n),
+        engine=engine,
+        vlm_model=vlm_model,
+        enrich=enrich,
+        tabular=(entry["kind"] == "tabular"),
+        title=entry.get("label") or entry["original_filename"],
+    )
+    if error is not None:
+        return error
+
+    md_rel = f"{stem}/{lib.supplement_stem(stem, n)}.md"
+    extraction = _extraction_record(
+        result, source_hash=entry["file_hash"], markdown_path=md_rel
+    )
+    entry["extraction"] = extraction.model_dump(exclude_none=True)
+    record[PROVENANCE_KEY] = prov
+    lib.write_record(stem, record)
+    _sync_to_central(lib, stem)
+
+    return {
+        "status": "ok",
+        "id": namespaced_id(stem),
+        "n": n,
+        "markdown_path": md_rel,
+        "n_images": result["n_images"],
+        "extractor": result["extractor"],
+        "extractor_version": result["extractor_version"],
+        "engine": result["engine"],
+        "enrichments": result.get("enrichments", []),
+        "probe": result["probe"],
+    }
+
+
+def _run_extraction(
+    src: Path,
+    md_path: Path,
+    *,
+    engine: str = "auto",
+    vlm_model: str = "granite_docling",
+    enrich=(),
+    tabular: bool = False,
+    title: str | None = None,
+) -> tuple[dict | None, dict | None]:
+    """Extract ``src`` to ``md_path``, returning ``(result, error_envelope)``.
+
+    Exactly one of the two is non-None. Every caller of an extraction backend has
+    the same two failure modes to translate — the extra isn't installed, or the
+    engine crashed on this document — and neither should ever reach the shell as
+    a traceback, so that translation lives here once rather than at each call site.
+
+    ``tabular`` routes to the spreadsheet backend instead of docling; the two
+    return the same dict shape, so callers need not know which one ran. ``title``
+    is the tabular backend's H1 (ignored by docling, which takes its own).
+    """
+    from cite.extract import ExtractorUnavailable, extract_to_markdown, tabular_to_markdown
+
+    try:
+        if tabular:
+            return tabular_to_markdown(src, md_path, title=title), None
+        return (
+            extract_to_markdown(
+                src, md_path, engine=engine, vlm_model=vlm_model, enrich=enrich
+            ),
+            None,
+        )
+    except ExtractorUnavailable as e:
+        return None, {"status": "error", "message": str(e), "hint": "install cite[extract]"}
+    except Exception as e:  # backend runtime failure — surface, don't crash
+        return None, {"status": "error", "message": f"extraction failed: {e}"}
+
+
+def _extraction_record(result: dict, *, source_hash: str, markdown_path: str) -> Extraction:
+    """Build the stored ``Extraction`` from a backend's result dict."""
+    return Extraction(
+        extractor=result["extractor"],
+        extractor_version=result["extractor_version"],
+        engine=result["engine"],
+        probe=result["probe"],
+        vlm_model=result["vlm_model"],
+        # Empty means "nothing enriched", which exclude_none keeps out of the
+        # record entirely — same as it was before the flag existed.
+        enrichments=result.get("enrichments") or None,
+        image_export_mode=result["image_export_mode"],
+        extracted_at=_now_iso(),
+        source_file_hash=source_hash,
+        markdown_path=markdown_path,
+        n_images=result["n_images"],
+    )
+
+
 def extract(
     lib: Library,
     id: str,
@@ -977,6 +1245,7 @@ def extract(
     engine: str = "auto",
     vlm_model: str = "granite_docling",
     enrich=(),
+    supplement: int | None = None,
 ) -> dict:
     """Extract full markdown for a stored reference using a local Docling pipeline.
 
@@ -990,9 +1259,11 @@ def extract(
     ``not_found`` for an unknown id, ``error`` for a missing source file or a
     docling failure (including ``ExtractorUnavailable``). All non-``ok`` branches
     are returned dicts here; the shell decides exit codes.
-    """
-    from cite.extract import ExtractorUnavailable, extract_to_markdown
 
+    ``supplement=N`` re-extracts the Nth supplementary file of the reference
+    instead — the remedy for a supplement whose first pass ran without, say,
+    ``--enrich formula``.
+    """
     stem = local_id(id)
     try:
         record = lib.read_record(stem)
@@ -1000,6 +1271,13 @@ def extract(
         return {"status": "not_found", "id": namespaced_id(stem)}
 
     prov = record.get(PROVENANCE_KEY, {})
+
+    if supplement is not None:
+        return _extract_supplement(
+            lib, stem, record, prov, supplement,
+            engine=engine, vlm_model=vlm_model, enrich=enrich,
+        )
+
     new_filename = prov.get("new_filename")
     src = lib.entry_dir(stem) / new_filename if new_filename else None
     if src is None or not src.exists():
@@ -1010,30 +1288,17 @@ def extract(
         }
 
     lib.clear_text(stem)  # idempotent re-extract: wipe any prior output first
-    try:
-        result = extract_to_markdown(
-            src, lib.text_path(stem), engine=engine, vlm_model=vlm_model, enrich=enrich
-        )
-    except ExtractorUnavailable as e:
-        return {"status": "error", "message": str(e), "hint": "install cite[extract]"}
-    except Exception as e:  # docling runtime failure — surface, don't crash
-        return {"status": "error", "message": f"extraction failed: {e}"}
+    result, error = _run_extraction(
+        src, lib.text_path(stem), engine=engine, vlm_model=vlm_model, enrich=enrich
+    )
+    if error is not None:
+        return error
 
     md_rel = f"{stem}/{stem}.md"
-    extraction = Extraction(
-        extractor=result["extractor"],
-        extractor_version=result["extractor_version"],
-        engine=result["engine"],
-        probe=result["probe"],
-        vlm_model=result["vlm_model"],
-        # Empty means "nothing enriched", which exclude_none keeps out of the
-        # record entirely — same as it was before the flag existed.
-        enrichments=result.get("enrichments") or None,
-        image_export_mode=result["image_export_mode"],
-        extracted_at=_now_iso(),
-        source_file_hash=prov.get("file_hash") or content_hash(src),
+    extraction = _extraction_record(
+        result,
+        source_hash=prov.get("file_hash") or content_hash(src),
         markdown_path=md_rel,
-        n_images=result["n_images"],
     )
     prov["extraction"] = extraction.model_dump(exclude_none=True)
     record[PROVENANCE_KEY] = prov
@@ -1060,8 +1325,6 @@ def extract_file(
     Writes ``<stem>.md`` + ``<stem>_artifacts/`` beside the input file.
     No library, record, or provenance involved — just file in, markdown out.
     """
-    from cite.extract import ExtractorUnavailable, extract_to_markdown
-
     if not src.exists():
         return {"status": "error", "message": f"file not found: {src}"}
 
@@ -1073,14 +1336,11 @@ def extract_file(
     if artifacts_dir.is_dir():
         shutil.rmtree(artifacts_dir)
 
-    try:
-        result = extract_to_markdown(
-            src, md_path, engine=engine, vlm_model=vlm_model, enrich=enrich
-        )
-    except ExtractorUnavailable as e:
-        return {"status": "error", "message": str(e), "hint": "install cite[extract]"}
-    except Exception as e:
-        return {"status": "error", "message": f"extraction failed: {e}"}
+    result, error = _run_extraction(
+        src, md_path, engine=engine, vlm_model=vlm_model, enrich=enrich
+    )
+    if error is not None:
+        return error
 
     return {
         "status": "ok",
@@ -1113,25 +1373,53 @@ def library_view(lib: Library, *, full: bool = False) -> list | dict:
     summaries = []
     for r in records:
         prov = r.get(PROVENANCE_KEY, {})
-        summaries.append({
+        summary = {
             "id": namespaced_id(prov.get("new_filename", "").rsplit(".", 1)[0]),
             "cite_type": prov.get("cite_type"),
             "title": r.get("title"),
             "year": issued_year(r),
             "new_filename": prov.get("new_filename"),
-        })
+        }
+        # Only when there are any: the compact listing is the agent's default
+        # view of the library, and a `0` on every line is pure context cost.
+        if _supplements(prov):
+            summary["n_supplements"] = len(_supplements(prov))
+        summaries.append(summary)
     return {"count": len(summaries), "references": summaries}
 
 
-def text(lib: Library, id: str, *, path_only: bool = False) -> dict:
+def text(
+    lib: Library, id: str, *, path_only: bool = False, supplement: int | None = None
+) -> dict:
     """Locate a reference's extracted markdown.
 
     Returns a ``not_found`` envelope if it hasn't been extracted, else
     ``{"status": "ok", "path": ..., "content": ...}``. The shell renders the bare
     ``path`` or ``content`` string for a hit (markdown is not JSON), and emits the
     ``not_found`` envelope as JSON. ``path_only`` is a hint to the shell.
+
+    ``supplement=N`` returns the Nth supplementary file's markdown instead. The
+    ordinals come from ``cite get <id>`` (``_provenance.supplements``).
     """
     stem = local_id(id)
+    if supplement is not None:
+        path = lib.supplement_text_path(stem, supplement)
+        if not path.exists():
+            return {
+                "status": "not_found",
+                "id": namespaced_id(stem),
+                "n": supplement,
+                "hint": (
+                    f"no extracted markdown for supplement {supplement}; "
+                    "see `cite get <id>` for what is attached"
+                ),
+            }
+        return {
+            "status": "ok",
+            "path": str(path),
+            "content": lib.read_supplement_text(stem, supplement),
+        }
+
     if not lib.text_path(stem).exists():
         return {
             "status": "not_found",
