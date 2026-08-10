@@ -53,9 +53,12 @@ To ADD a file, always work the workflow in order — do not jump to add_manual:
        • a title search returns compact summaries → pick one and file it by its
          `source_id`: add_by_doi(file, doi=<source_id>) (re-fetches the complete
          record). If a summary has no DOI, use add_manual.
-  4. Only if search returns `empty`/`weak_match`: add_manual(file, type, fields).
+  4. Only if search returns `not_found`/`weak_match`: add_manual(file, type, fields).
      This is the last resort. On `missing_fields`, re-check the prepare `head` /
      peek output before asking the USER, and never fabricate bibliographic facts.
+     `unavailable` is NOT one of these: it means a source could not be reached
+     (rate limit, outage), so wait and retry the search — never hand-enter a
+     record on the strength of it.
 
   A file prepared in step 1 has its extraction adopted automatically by any add in
   step 3/4 (same bytes) — the add result reports `extracted: true`, and the slow
@@ -185,7 +188,10 @@ def search(
     A DOI search returns one full CSL candidate → file with `add_from_csl`.
     A title search returns compact `candidates` summaries (title, authors, year,
     DOI) already filtered for relevance → pick one and file by its `source_id`
-    with `add_by_doi`. status 'weak_match' or 'empty' means go to `add_manual`.
+    with `add_by_doi`. status 'weak_match' or 'not_found' means go to `add_manual`.
+    status 'unavailable' means a source could not be reached — read
+    `unavailable_sources` (each may carry `retry_after` seconds), wait, and retry
+    the same search. Do not treat it as "no such work".
     """
     if not doi and not title:
         return _error("provide doi or title")

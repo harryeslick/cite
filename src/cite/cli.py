@@ -203,7 +203,12 @@ def search(
     """Search reference databases for a citation by DOI or title/author."""
     if not doi and not title:
         raise typer.BadParameter("provide --doi or --title")
-    _emit(run_search(doi=doi, title=title, author=author, year=year))
+    result = run_search(doi=doi, title=title, author=author, year=year)
+    _emit(result)
+    # `not_found` is a normal branch and exits 0; `unavailable` is a genuine
+    # failure to complete the search, so it must be loud enough to notice.
+    if result["status"] == "unavailable":
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -234,7 +239,10 @@ def add(
     _require_initialized(lib)
 
     if doi:
-        _emit(ops.add_by_doi(lib, file, doi, force=force))
+        result = ops.add_by_doi(lib, file, doi, force=force)
+        _emit(result)
+        if result["status"] == "unavailable":
+            raise typer.Exit(code=1)
     elif csl is not None:
         # CLI owns the stdin/file read; ops.load_csl parses the text.
         text = sys.stdin.read() if csl == "-" else Path(csl).read_text()

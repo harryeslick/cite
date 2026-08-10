@@ -21,6 +21,7 @@ which is already colon-free and filesystem-safe.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import tomllib
@@ -28,6 +29,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cite.models import PROVENANCE_KEY
+
+# Written commented-out by `cite init`. Settings nobody can find are settings
+# nobody uses, and this is the one place a user is guaranteed to look; the
+# equivalent environment variables are invisible until you read the README.
+_SEARCH_CONFIG_TEMPLATE = """
+# Optional — how cite identifies itself to the reference databases.
+# Both settings also read from the environment ($CITE_CONTACT_EMAIL,
+# $OPENALEX_API_KEY), which takes precedence over anything set here.
+# [search]
+# contact_email = "you@example.org"   # sent to CrossRef as a User-Agent mailto:
+# openalex_api_key = ""               # free key: https://openalex.org/settings/api
+#                                     # raises OpenAlex's budget $0.10 -> $1/day.
+#                                     # NOTE: a key here lands in this file — use
+#                                     # the env var if the library is in a repo.
+"""
 
 
 class Library:
@@ -140,7 +156,7 @@ class Library:
         if not toml_path.exists():
             created = datetime.now(timezone.utc).isoformat(timespec="seconds")
             toml_path.write_text(
-                f'version = "1"\ncreated = "{created}"\n',
+                f'version = "1"\ncreated = "{created}"\n{_SEARCH_CONFIG_TEMPLATE}',
                 encoding="utf-8",
             )
 
@@ -448,9 +464,68 @@ class Library:
     # Config
     # ------------------------------------------------------------------ #
 
-    def _read_config(self) -> dict:
+    def config(self) -> dict:
+        """Parse ``cite.toml``, or return ``{}`` if there isn't one.
+
+        Never raises on a malformed file: config here is entirely optional
+        settings, so a stray typo must not take down commands that don't read
+        it. A broken file reads as "nothing configured", which `cite doctor
+        --self` then reports plainly.
+        """
         toml_path = self.root / "cite.toml"
         if not toml_path.exists():
             return {}
-        return tomllib.loads(toml_path.read_text(encoding="utf-8"))
+        try:
+            return tomllib.loads(toml_path.read_text(encoding="utf-8"))
+        except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError):
+            return {}
+
+
+# --------------------------------------------------------------------------- #
+# Finding the library
+# --------------------------------------------------------------------------- #
+
+_LIBRARY_DIRNAME = "library"
+
+
+def resolve_library(library: Path | None) -> Library:
+    """Resolve which library a command acts on.
+
+    Order: explicit ``--library``, then ``$CITE_LIBRARY``, then the nearest
+    ``cite.toml`` found by walking **up** from the current directory (checking
+    each ancestor both as a library itself and as the parent of a ``library/``).
+
+    This lives in the storage layer rather than with the operations because it
+    answers a question about the disk, and because things below the operations
+    layer — the search backends reading their identity out of ``cite.toml`` —
+    need the same answer without depending on operations.
+
+    It exists because the old behaviour — a bare relative ``Path("library")`` —
+    was silently wrong from every subdirectory of a project: ``cd library &&
+    cite doctor`` resolved ``library/library``, found nothing, and reported a
+    healthy empty library rather than an error.
+
+    When the search finds nothing the returned Library still points at
+    ``./library`` (so messages have a concrete path to name), but carries
+    ``origin`` and ``searched_from`` so ``require_initialized`` can explain
+    itself.
+    """
+    if library is not None:
+        return Library(library, origin="--library")
+
+    env = os.environ.get("CITE_LIBRARY")
+    if env:
+        return Library(Path(env), origin="$CITE_LIBRARY")
+
+    start = Path.cwd()
+    for directory in [start, *start.parents]:
+        for candidate in (directory, directory / _LIBRARY_DIRNAME):
+            if (candidate / "cite.toml").exists():
+                return Library(candidate, origin="found cite.toml", searched_from=start)
+
+    return Library(
+        Path(_LIBRARY_DIRNAME),
+        origin="no cite.toml found; fell back to ./library",
+        searched_from=start,
+    )
 

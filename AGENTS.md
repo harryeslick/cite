@@ -38,6 +38,10 @@ prints one JSON object with a `status` field — read it and follow
 ## Rules
 - Citation types are limited to: `journal-article`, `book`, `book-section`,
   `web-site`, `trial-report`, `data-set`, `other-report`.
+- `status: unavailable` from `search` / `add --doi` means a reference database
+  could not be reached (rate limit, outage), **not** that the work is missing.
+  Read `unavailable_sources` — an entry may carry `retry_after` seconds — wait,
+  then re-run the identical search. Never fall back to `--manual` on it.
 - `status: duplicate` means identical file bytes are already filed — stop.
 - `status: near_duplicate` means the same work may already be filed. You may
   resolve `definitive` / `strong` matches yourself; show `possible` matches to

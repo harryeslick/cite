@@ -621,3 +621,49 @@ def test_remove_central_flag(tmp_path):
     assert not central.entry_dir(stem).is_dir()
     # Project bundle is still there.
     assert (Path(lib) / stem / f"{stem}.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# A rate-limited search must be loud, not a quiet "no match"
+# ---------------------------------------------------------------------------
+
+
+def test_search_exits_nonzero_and_says_unavailable_on_rate_limit(monkeypatch):
+    import respx
+    import httpx
+
+    with respx.mock:
+        respx.get("https://api.openalex.org/works").mock(
+            return_value=httpx.Response(429, headers={"Retry-After": "30"})
+        )
+        result = runner.invoke(app, ["search", "--title", "Some Paper"])
+
+    assert result.exit_code == 1
+    data = json.loads(result.output)
+    assert data["status"] == "unavailable"
+    assert data["unavailable_sources"][0]["retry_after"] == 30
+
+
+def test_add_by_doi_reports_unavailable_instead_of_go_manual(tmp_path, monkeypatch):
+    import respx
+    import httpx
+
+    lib = _new_lib(tmp_path)
+    f = _sample_file(tmp_path)
+
+    with respx.mock:
+        respx.get("https://api.crossref.org/works/10.1000/xyz123").mock(
+            return_value=httpx.Response(503)
+        )
+        respx.get("https://api.datacite.org/dois/10.1000/xyz123").mock(
+            return_value=httpx.Response(503)
+        )
+        result = runner.invoke(
+            app, ["add", str(f), "--doi", "10.1000/xyz123", "--library", lib]
+        )
+
+    assert result.exit_code == 1
+    data = json.loads(result.output)
+    assert data["status"] == "unavailable"
+    # The old bug: this branch used to advise --manual after a transient outage.
+    assert "--manual" not in data["hint"]

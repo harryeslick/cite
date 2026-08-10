@@ -2,37 +2,26 @@
 
 from __future__ import annotations
 
-import httpx
+from cite.search import net
 
 
 def fetch_doi(doi: str) -> dict | None:
     """Fetch a record from DataCite by DOI.
 
-    Returns a CSL-JSON dict on success, None on 404 or network error.
+    Returns a CSL-JSON dict on success and None on a genuine 404. Failures that
+    prevent an answer raise ``net.SearchUnavailable`` (see crossref.fetch_doi).
     Does NOT add source/source_id — the orchestrator does that.
     """
-    url = f"https://api.datacite.org/dois/{doi}"
-    try:
-        response = httpx.get(
-            url,
-            headers={"Accept": "application/vnd.api+json"},
-            timeout=15.0,
-            follow_redirects=True,
-        )
-    except httpx.HTTPError:
-        return None
-
+    response = net.get(
+        f"https://api.datacite.org/dois/{doi}",
+        source="datacite",
+        headers={"Accept": "application/vnd.api+json"},
+    )
     if response.status_code == 404:
         return None
-    if not response.is_success:
-        return None
 
-    try:
-        data = response.json()
-    except Exception:
-        return None
-
-    attrs = data.get("data", {}).get("attributes", {})
+    data = net.parse_json(response, "datacite")
+    attrs = (data.get("data") or {}).get("attributes") or {}
     return _parse_attributes(attrs)
 
 

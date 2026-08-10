@@ -24,6 +24,7 @@ from importlib import util as importlib_util
 from cite import __version__
 from cite.models import PROVENANCE_KEY, missing_required_fields
 from cite.naming import namespaced_id
+from cite.search import net
 from cite.store import Library
 
 # Problem-class identifiers, also used as the keys of the summary histogram.
@@ -175,6 +176,10 @@ def run_self_check(lib: Library) -> dict:
         else "broken: the 'mcp' extra is not installed, so `cite-mcp` exits at startup"
     )
 
+    # Neither identity setting is required — both only widen the rate/credit
+    # budget the search backends get — so an absent one is reported, not a problem.
+    identity = net.identity_report()
+
     hints = []
     missing = [name for name, present in extras.items() if not present]
     if missing:
@@ -182,6 +187,13 @@ def run_self_check(lib: Library) -> dict:
     if not lib.is_initialized():
         hints.append(
             f"no library at '{lib.root}' — pass --library <path> or run `cite init`"
+        )
+    if not identity["openalex_api_key"]:
+        hints.append(
+            "searches run on OpenAlex's $0.10/day unauthenticated budget; a free key "
+            f"raises it to $1/day (openalex.org/settings/api) — set "
+            f"{net.OPENALEX_API_KEY_KEY} under [{net.CONFIG_SECTION}] in "
+            f"{lib.root / 'cite.toml'}, or ${net.OPENALEX_API_KEY_ENV}"
         )
 
     return {
@@ -195,6 +207,7 @@ def run_self_check(lib: Library) -> dict:
             "initialized": lib.is_initialized(),
             "searched_from": str(lib.searched_from) if lib.searched_from else None,
         },
+        "search_identity": identity,
         "extract_engines": {
             # Both engines ship with docling; neither is usable without it.
             "text": extras["extract"],

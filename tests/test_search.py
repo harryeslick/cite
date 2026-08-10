@@ -9,8 +9,9 @@ import httpx
 import pytest
 import respx
 
-from cite.search import crossref, datacite, openalex
+from cite.search import crossref, datacite, net, openalex
 from cite.search import search
+from cite.store import Library
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +311,7 @@ def test_orchestrator_empty_result_both_fail():
     )
     result = search(doi="10.0000/nothing")
 
-    assert result["status"] == "empty"
+    assert result["status"] == "not_found"
     assert result["candidates"] == []
     assert "no match found" in result["suggested_next"]
 
@@ -322,7 +323,7 @@ def test_orchestrator_empty_title_search():
     )
     result = search(title="this title will never exist in any database ever")
 
-    assert result["status"] == "empty"
+    assert result["status"] == "not_found"
     assert result["candidates"] == []
     assert "no match found" in result["suggested_next"]
 
@@ -376,3 +377,244 @@ def test_orchestrator_title_filters_irrelevant_hits_as_weak_match():
     assert result["candidates"] == []
     assert "none matched" in result["note"]
     assert "--manual" in result["suggested_next"]
+
+
+# ---------------------------------------------------------------------------
+# Failure is not absence
+#
+# The regression these guard: every backend used to collapse 429s, 5xx and
+# timeouts into the same sentinel as "no such record", so a rate-limited lookup
+# reached the agent as "no match found — enter it by hand".
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(429, headers={"Retry-After": "30"}),
+        httpx.Response(503),
+    ],
+)
+@respx.mock
+def test_crossref_raises_rather_than_reporting_a_miss(response):
+    respx.get("https://api.crossref.org/works/10.1000/xyz123").mock(
+        return_value=response
+    )
+    with pytest.raises(net.SearchUnavailable) as excinfo:
+        crossref.fetch_doi("10.1000/xyz123")
+    assert excinfo.value.source == "crossref"
+
+
+@respx.mock
+def test_datacite_raises_on_connection_error():
+    respx.get("https://api.datacite.org/dois/10.5281/zenodo.999").mock(
+        side_effect=httpx.ConnectError("boom")
+    )
+    with pytest.raises(net.SearchUnavailable) as excinfo:
+        datacite.fetch_doi("10.5281/zenodo.999")
+    assert excinfo.value.kind == net.NETWORK_ERROR
+
+
+@respx.mock
+def test_openalex_raises_on_rate_limit_carrying_retry_after():
+    respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "42"})
+    )
+    with pytest.raises(net.SearchUnavailable) as excinfo:
+        openalex.search("Reactive Oxygen Species in Cells")
+    assert excinfo.value.kind == net.RATE_LIMITED
+    assert excinfo.value.retry_after == 42
+
+
+@respx.mock
+def test_openalex_raises_on_unreadable_body():
+    respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, text="<html>gateway error</html>")
+    )
+    with pytest.raises(net.SearchUnavailable):
+        openalex.search("anything")
+
+
+@respx.mock
+def test_orchestrator_title_rate_limit_is_unavailable_not_not_found():
+    respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "30"})
+    )
+    result = search(title="Reactive Oxygen Species in Cells")
+
+    assert result["status"] == "unavailable"
+    assert result["candidates"] == []
+    # The failure survives into the envelope, actionably.
+    assert result["unavailable_sources"] == [
+        {
+            "source": "openalex",
+            "kind": net.RATE_LIMITED,
+            "reason": "openalex rate limit reached",
+            "retry_after": 30,
+        }
+    ]
+    # And the agent is told to retry, never to hand-key the record.
+    assert "30s" in result["suggested_next"]
+    assert "--manual" not in result["suggested_next"]
+
+
+@respx.mock
+def test_orchestrator_doi_all_sources_unavailable():
+    respx.get("https://api.crossref.org/works/10.1000/xyz123").mock(
+        return_value=httpx.Response(500)
+    )
+    respx.get("https://api.datacite.org/dois/10.1000/xyz123").mock(
+        side_effect=httpx.ReadTimeout("slow")
+    )
+    result = search(doi="10.1000/xyz123")
+
+    assert result["status"] == "unavailable"
+    assert {e["source"] for e in result["unavailable_sources"]} == {
+        "crossref",
+        "datacite",
+    }
+
+
+@respx.mock
+def test_orchestrator_doi_partial_failure_reports_the_gap():
+    """CrossRef down, DataCite answers: `ok`, but say what we couldn't ask."""
+    respx.get("https://api.crossref.org/works/10.5281/zenodo.999").mock(
+        return_value=httpx.Response(429)
+    )
+    respx.get("https://api.datacite.org/dois/10.5281/zenodo.999").mock(
+        return_value=httpx.Response(200, json=DATACITE_PAYLOAD)
+    )
+    result = search(doi="10.5281/zenodo.999")
+
+    assert result["status"] == "ok"
+    assert result["candidates"][0]["source"] == "datacite"
+    assert result["unavailable_sources"][0]["source"] == "crossref"
+
+
+@respx.mock
+def test_orchestrator_genuine_miss_still_carries_no_failure_noise():
+    respx.get("https://api.crossref.org/works/10.0000/nothing").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get("https://api.datacite.org/dois/10.0000/nothing").mock(
+        return_value=httpx.Response(404)
+    )
+    result = search(doi="10.0000/nothing")
+
+    assert result["status"] == "not_found"
+    assert "unavailable_sources" not in result
+
+
+# ---------------------------------------------------------------------------
+# Caller identity (net.py)
+# ---------------------------------------------------------------------------
+
+
+def test_user_agent_uses_contact_email_when_set(monkeypatch):
+    monkeypatch.setenv(net.CONTACT_EMAIL_ENV, "someone@example.org")
+    assert "mailto:someone@example.org" in net.user_agent()
+
+
+def test_user_agent_falls_back_to_project_not_a_person(monkeypatch):
+    monkeypatch.delenv(net.CONTACT_EMAIL_ENV, raising=False)
+    agent = net.user_agent()
+    assert "mailto:" not in agent
+    assert agent.startswith("cite/")
+
+
+@respx.mock
+def test_openalex_sends_api_key_when_configured(monkeypatch):
+    monkeypatch.setenv(net.OPENALEX_API_KEY_ENV, "sekrit")
+    route = respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, json=OPENALEX_PAYLOAD)
+    )
+    openalex.search("Reactive Oxygen Species in Cells")
+    assert route.calls.last.request.url.params["api_key"] == "sekrit"
+
+
+@respx.mock
+def test_openalex_search_works_without_an_api_key(monkeypatch):
+    monkeypatch.delenv(net.OPENALEX_API_KEY_ENV, raising=False)
+    route = respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, json=OPENALEX_PAYLOAD)
+    )
+    results = openalex.search("Reactive Oxygen Species in Cells")
+    assert len(results) == 1
+    assert "api_key" not in route.calls.last.request.url.params
+
+
+# ---------------------------------------------------------------------------
+# Identity from cite.toml
+# ---------------------------------------------------------------------------
+
+
+def _library_with_config(tmp_path, body: str) -> Library:
+    """A library whose cite.toml carries `body`, wired in as the resolved one."""
+    lib = Library(tmp_path / "lib")
+    lib.init()
+    (lib.root / "cite.toml").write_text(body, encoding="utf-8")
+    return lib
+
+
+def test_settings_read_from_cite_toml(tmp_path, monkeypatch):
+    lib = _library_with_config(
+        tmp_path,
+        '[search]\ncontact_email = "lib@example.org"\nopenalex_api_key = "from-toml"\n',
+    )
+    monkeypatch.setattr(net, "resolve_library", lambda _: lib)
+
+    assert net.contact_email() == "lib@example.org"
+    assert net.openalex_api_key() == "from-toml"
+    assert net.identity_report()["openalex_api_key_source"] == "cite.toml"
+
+
+def test_env_overrides_cite_toml(tmp_path, monkeypatch):
+    lib = _library_with_config(
+        tmp_path, '[search]\nopenalex_api_key = "from-toml"\n'
+    )
+    monkeypatch.setattr(net, "resolve_library", lambda _: lib)
+    monkeypatch.setenv(net.OPENALEX_API_KEY_ENV, "from-env")
+
+    assert net.openalex_api_key() == "from-env"
+    assert net.identity_report()["openalex_api_key_source"] == "env"
+
+
+def test_a_library_without_a_search_section_is_simply_unconfigured(tmp_path, monkeypatch):
+    """`cite init` writes the section commented out — that must parse to nothing."""
+    lib = Library(tmp_path / "lib")
+    lib.init()
+    monkeypatch.setattr(net, "resolve_library", lambda _: lib)
+
+    assert lib.config().get("search") is None
+    assert net.openalex_api_key() is None
+    assert net.contact_email() is None
+
+
+def test_a_malformed_cite_toml_does_not_break_searching(tmp_path, monkeypatch):
+    """Optional settings must never be able to take down a search."""
+    lib = _library_with_config(tmp_path, "[search\nthis is not toml")
+    monkeypatch.setattr(net, "resolve_library", lambda _: lib)
+
+    assert lib.config() == {}
+    assert net.openalex_api_key() is None
+
+
+def test_identity_report_never_echoes_the_key(tmp_path, monkeypatch):
+    monkeypatch.setenv(net.OPENALEX_API_KEY_ENV, "super-secret")
+    report = net.identity_report()
+
+    assert report["openalex_api_key"] is True
+    assert "super-secret" not in str(report)
+
+
+@respx.mock
+def test_openalex_uses_a_key_configured_only_in_cite_toml(tmp_path, monkeypatch):
+    """The whole point of the config file: no env wiring, key still sent."""
+    lib = _library_with_config(tmp_path, '[search]\nopenalex_api_key = "toml-key"\n')
+    monkeypatch.setattr(net, "resolve_library", lambda _: lib)
+    route = respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, json=OPENALEX_PAYLOAD)
+    )
+    openalex.search("Reactive Oxygen Species in Cells")
+
+    assert route.calls.last.request.url.params["api_key"] == "toml-key"

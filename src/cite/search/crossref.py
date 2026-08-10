@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import httpx
+from cite.search import net
 
 _CROSSREF_TYPE_MAP: dict[str, str] = {
     "journal-article": "article-journal",
@@ -15,37 +15,20 @@ _CROSSREF_TYPE_MAP: dict[str, str] = {
     "proceedings-article": "paper-conference",
 }
 
-_USER_AGENT = "cite/0.1 (mailto:32809214+harryeslick@users.noreply.github.com)"
-
-
 def fetch_doi(doi: str) -> dict | None:
     """Fetch a record from CrossRef by DOI.
 
-    Returns a CSL-JSON dict on success, None on 404 or network error.
-    Does NOT add source/source_id — the orchestrator does that.
+    Returns a CSL-JSON dict on success and None when CrossRef says the DOI is
+    not theirs (404). Anything that stops us getting an answer — rate limit,
+    server error, timeout — raises ``net.SearchUnavailable`` rather than
+    masquerading as a miss. Does NOT add source/source_id — the orchestrator
+    does that.
     """
-    url = f"https://api.crossref.org/works/{doi}"
-    try:
-        response = httpx.get(
-            url,
-            headers={"User-Agent": _USER_AGENT},
-            timeout=15.0,
-            follow_redirects=True,
-        )
-    except httpx.HTTPError:
-        return None
-
+    response = net.get(f"https://api.crossref.org/works/{doi}", source="crossref")
     if response.status_code == 404:
         return None
-    if not response.is_success:
-        return None
 
-    try:
-        data = response.json()
-    except Exception:
-        return None
-
-    message = data.get("message", {})
+    message = net.parse_json(response, "crossref").get("message", {})
     return _parse_message(message)
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import httpx
+from cite.search import net
 
 _OPENALEX_TYPE_MAP: dict[str, str] = {
     "article": "article-journal",
@@ -18,37 +18,31 @@ def search(
 ) -> list[dict]:
     """Search OpenAlex for works matching title (and optionally author/year).
 
-    Returns a list of CSL-JSON dicts (may be empty on error).
+    Returns a list of CSL-JSON dicts; an empty list means OpenAlex genuinely
+    had no match. A failure to reach or be served by OpenAlex raises
+    ``net.SearchUnavailable`` instead — since the move to a daily credit budget,
+    exhausting the allowance is an ordinary event, and reporting it as "no such
+    paper" would send the agent off to hand-key metadata that already exists.
+
     Each dict includes an ``openalex_id`` key for the orchestrator to use
     as source_id.
     """
     params: dict = {
         "search": title,
         "per-page": rows,
-        "mailto": "32809214+harryeslick@users.noreply.github.com",
     }
+    # Authentication buys 10x the daily credit budget; unauthenticated calls
+    # still work, on the smaller allowance.
+    api_key = net.openalex_api_key()
+    if api_key:
+        params["api_key"] = api_key
     if year is not None:
         params["filter"] = f"publication_year:{year}"
 
-    try:
-        response = httpx.get(
-            "https://api.openalex.org/works",
-            params=params,
-            timeout=15.0,
-            follow_redirects=True,
-        )
-    except httpx.HTTPError:
-        return []
-
-    if not response.is_success:
-        return []
-
-    try:
-        data = response.json()
-    except Exception:
-        return []
-
-    results = data.get("results") or []
+    response = net.get(
+        "https://api.openalex.org/works", source="openalex", params=params
+    )
+    results = net.parse_json(response, "openalex").get("results") or []
     candidates = [_parse_result(r) for r in results]
 
     # Optional author filtering/boosting: put author-matching results first

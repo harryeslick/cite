@@ -207,3 +207,34 @@ class TestSelfCheck:
         assert out["status"] == expected
         assert out["library"]["initialized"] is True
         assert out["hints"] == [] or all("library" not in h for h in out["hints"])
+
+    def test_reports_search_identity_and_nudges_for_an_openalex_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Neither setting is required, so absence is reported, never a failure."""
+        from cite.search import net
+
+        monkeypatch.delenv(net.OPENALEX_API_KEY_ENV, raising=False)
+        monkeypatch.setenv(net.CONTACT_EMAIL_ENV, "someone@example.org")
+        lib = Library(tmp_path / "lib")
+        lib.init()
+        out = run_self_check(lib)
+
+        identity = out["search_identity"]
+        assert identity["contact_email"] == "someone@example.org"
+        assert identity["openalex_api_key"] is False
+        assert "mailto:someone@example.org" in identity["user_agent"]
+        assert any("OPENALEX_API_KEY" in hint for hint in out["hints"])
+        # A missing key is a smaller budget, not a broken install.
+        assert "search_identity" not in str(out["status"])
+
+    def test_an_openalex_key_silences_the_nudge(self, tmp_path, monkeypatch):
+        from cite.search import net
+
+        monkeypatch.setenv(net.OPENALEX_API_KEY_ENV, "sekrit")
+        lib = Library(tmp_path / "lib")
+        lib.init()
+        out = run_self_check(lib)
+
+        assert out["search_identity"]["openalex_api_key"] is True
+        assert not any("OPENALEX_API_KEY" in hint for hint in out["hints"])

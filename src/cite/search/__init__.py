@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 
 from cite.models import cite_type_from_csl
-from cite.search import crossref, datacite, openalex
+from cite.search import crossref, datacite, net, openalex
+from cite.search.net import SearchUnavailable
 
 # Title-relevance gate for the OpenAlex (title) path. OpenAlex always returns its
 # top-N by text relevance, so an unmatched query (e.g. grey literature with no DB
@@ -32,10 +33,19 @@ def search(
     """Search for a reference record by DOI or by title/author/year.
 
     Returns a dict with keys:
-      - ``status``: "ok" or "empty"
+      - ``status``: "ok", "not_found", "weak_match" or "unavailable"
       - ``query``: echo of the input parameters
       - ``candidates``: list of CSL-JSON dicts (may be empty)
       - ``suggested_next``: a hint string for the next step
+      - ``unavailable_sources``: present only when a backend could not be
+        reached — one compact entry per source (see net.SearchUnavailable)
+
+    ``not_found`` means the sources answered and had nothing. ``unavailable``
+    means we never got an answer, so the caller must retry rather than give up
+    and hand-enter metadata. The distinction is the whole point of the
+    ``unavailable_sources`` key: a search can succeed on one source while
+    another is rate-limited, and silently returning the shorter candidate list
+    would be the same bug at a smaller scale.
 
     Each candidate carries two extra keys beyond standard CSL:
       - ``source``: "crossref" | "datacite" | "openalex"
@@ -49,15 +59,24 @@ def search(
         "year": year,
     }
     candidates: list[dict] = []
+    unavailable: list[SearchUnavailable] = []
 
     if doi is not None:
-        # DOI path: try CrossRef first, then DataCite
-        record = crossref.fetch_doi(doi)
+        # DOI path: try CrossRef first, then DataCite. Each is attempted on its
+        # own so one being down doesn't hide what the other knows.
+        record = None
+        try:
+            record = crossref.fetch_doi(doi)
+        except SearchUnavailable as exc:
+            unavailable.append(exc)
         if record is not None:
             _annotate(record, source="crossref", source_id=doi)
             candidates.append(record)
         else:
-            record = datacite.fetch_doi(doi)
+            try:
+                record = datacite.fetch_doi(doi)
+            except SearchUnavailable as exc:
+                unavailable.append(exc)
             if record is not None:
                 _annotate(record, source="datacite", source_id=doi)
                 candidates.append(record)
@@ -65,7 +84,10 @@ def search(
     elif title is not None:
         # Title path: OpenAlex. Filter out low-relevance noise so the agent isn't
         # forced to read and reject unrelated papers (see _TITLE_OVERLAP_MIN).
-        results = openalex.search(title, author=author, year=year)
+        try:
+            results = openalex.search(title, author=author, year=year)
+        except SearchUnavailable as exc:
+            return _unavailable_envelope(query, [exc])
         relevant = [r for r in results if _title_overlap(title, r) >= _TITLE_OVERLAP_MIN]
         for r in relevant:
             oa_id = r.pop("openalex_id", "") or ""
@@ -91,7 +113,12 @@ def search(
                 "suggested_next": _MANUAL_HINT,
             }
 
-    status = "ok" if candidates else "empty"
+    # Nothing found *and* a source we never heard back from: we cannot claim the
+    # work is absent, so this is a retry, not a go-manual.
+    if not candidates and unavailable:
+        return _unavailable_envelope(query, unavailable)
+
+    status = "ok" if candidates else "not_found"
 
     if not candidates:
         suggested_next = _MANUAL_HINT
@@ -105,18 +132,53 @@ def search(
             "<source_id>. If a candidate has no DOI, fall back to --manual."
         )
 
-    return {
+    envelope = {
         "status": status,
         "query": query,
         "candidates": candidates,
         "suggested_next": suggested_next,
     }
+    # Partial failure: we did find something, but not everywhere we looked.
+    if unavailable:
+        envelope["unavailable_sources"] = [exc.as_dict() for exc in unavailable]
+    return envelope
 
 
 _MANUAL_HINT = (
     "no match found; gather fields and use: "
     "cite add <file> --manual --type <type> --field key=val ..."
 )
+
+
+def _unavailable_envelope(query: dict, failures: list[SearchUnavailable]) -> dict:
+    """Envelope for "we couldn't ask" — never to be confused with "not there".
+
+    The hint is emphatic on purpose: the failure mode this replaces was an agent
+    reading "no match found" after a 429 and hand-typing a record that OpenAlex
+    would have returned a minute later.
+    """
+    waits = [f.retry_after for f in failures if f.retry_after is not None]
+    if waits:
+        wait_hint = f"wait {max(waits)}s, then retry the identical search"
+    else:
+        wait_hint = "wait ~30s, then retry the identical search"
+    sources = ", ".join(sorted({f.source for f in failures}))
+    hint = (
+        f"could not reach {sources} — this is NOT a 'no match'. "
+        f"{wait_hint}. Do not enter metadata by hand on the strength of this result"
+    )
+    if any(f.kind == net.RATE_LIMITED and f.source == "openalex" for f in failures):
+        hint += (
+            f"; a free OpenAlex key in ${net.OPENALEX_API_KEY_ENV} raises the "
+            "daily budget 10x"
+        )
+    return {
+        "status": "unavailable",
+        "query": query,
+        "candidates": [],
+        "unavailable_sources": [f.as_dict() for f in failures],
+        "suggested_next": hint,
+    }
 
 
 def _tokens(text: str) -> set[str]:

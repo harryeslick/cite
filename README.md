@@ -78,6 +78,41 @@ If a result ever looks impossible, `cite doctor --self` reports which optional
 extras are installed, whether the `cite-mcp` entrypoint can start, and which
 library root resolved and how.
 
+### Identifying yourself to the reference databases (optional)
+
+Two settings, both optional — searches work without them, just on a smaller
+allowance. They live in the library's `cite.toml`, which `cite init` writes with
+the section commented out:
+
+```toml
+[search]
+contact_email = "you@example.org"   # sent to CrossRef as a User-Agent mailto:
+openalex_api_key = "..."            # free key: openalex.org/settings/api
+```
+
+| Setting            | Effect                                                                                                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `openalex_api_key` | OpenAlex bills API use against a daily budget: **$0.10/day** unauthenticated, **$1/day** with a free key from [openalex.org/settings/api](https://openalex.org/settings/api). |
+| `contact_email`    | Adds `mailto:` to the User-Agent sent to CrossRef/DataCite — their requested convention for identified traffic.                                                               |
+
+Both also read from `$CITE_CONTACT_EMAIL` / `$OPENALEX_API_KEY`, which
+**take precedence** over the file, so `OPENALEX_API_KEY=... cite search ...`
+overrides for one call.
+
+Keeping them in `cite.toml` means they follow the library: a per-project library
+carries its own identity, and the MCP server picks them up with no `--env`
+wiring, since it resolves the same library your CLI does. The trade-off is that
+a key in a `library/` inside a repo is a key you can commit — use the
+environment variable for that case.
+
+`cite doctor --self` reports both under `search_identity`, including which
+source each came from. The key's value is never echoed, only whether one is set.
+
+When a database can't be reached — rate limit, outage, timeout — `search` returns
+`status: unavailable` (exit 1) with an `unavailable_sources` list, *not*
+`not_found`. That distinction exists so an agent waits and retries instead of
+hand-typing metadata for a paper the database would have returned a minute later.
+
 Either way the library is laid out as a directory of **per-entity bundles** —
 each reference is a self-contained directory named by its id:
 
@@ -341,3 +376,7 @@ claude mcp add cite --env CITE_LIBRARY="$HOME/citations" -- cite-mcp
 ```
 
 Stateful tools also accept a `library` argument to override per call.
+
+`CITE_LIBRARY` is the only variable worth passing here: a host-launched server
+does not inherit your shell profile, but the search identity comes from the
+resolved library's `cite.toml`, so it needs no `--env` of its own.

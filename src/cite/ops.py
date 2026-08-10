@@ -55,7 +55,7 @@ from cite.naming import (
     record_id,
 )
 from cite.search import search as run_search
-from cite.store import Library
+from cite.store import Library, resolve_library
 from cite.validate import validate as run_validate
 
 # Helper keys the search layer attaches to candidates; we don't persist them.
@@ -67,51 +67,8 @@ _HELPER_KEYS = ("source", "source_id", "_cite_type")
 # --------------------------------------------------------------------------- #
 
 
-# The conventional name for a library that sits *beside* the project root, as
-# opposed to the project root itself being the library.
-_LIBRARY_DIRNAME = "library"
-
-
-def resolve_library(library: Path | None) -> Library:
-    """Resolve the library root: explicit ``--library``, else ``$CITE_LIBRARY``, else search.
-
-    An explicitly named root — the ``--library`` flag or ``$CITE_LIBRARY`` — is
-    taken literally and never searched from. The caller named a path; silently
-    using a different one would be worse than failing on the one they meant.
-
-    With neither, walk *up* from the current directory looking for the
-    ``cite.toml`` marker, testing each ancestor both as a library itself and as
-    the parent of a ``library/`` sibling. This is the git-style lookup, and it
-    exists because the old behaviour — a bare relative ``Path("library")`` — was
-    silently wrong from every subdirectory of a project: ``cd library && cite
-    doctor`` resolved ``library/library``, found nothing, and reported a healthy
-    empty library rather than an error.
-
-    When the search finds nothing the returned Library still points at
-    ``./library`` (so messages have a concrete path to name), but carries
-    ``origin`` and ``searched_from`` so :func:`require_initialized` can explain
-    itself.
-    """
-    if library is not None:
-        return Library(library, origin="--library")
-
-    env = os.environ.get("CITE_LIBRARY")
-    if env:
-        return Library(Path(env), origin="$CITE_LIBRARY")
-
-    start = Path.cwd()
-    for directory in [start, *start.parents]:
-        for candidate in (directory, directory / _LIBRARY_DIRNAME):
-            if (candidate / "cite.toml").exists():
-                return Library(
-                    candidate, origin="found cite.toml", searched_from=start
-                )
-
-    return Library(
-        Path(_LIBRARY_DIRNAME),
-        origin="no cite.toml found; fell back to ./library",
-        searched_from=start,
-    )
+# Library resolution lives in the storage layer (see store.resolve_library);
+# it is re-exported here because every caller reaches it through ops.
 
 
 # The central library is a single, hardcoded per-user location — no env var, no
@@ -454,12 +411,21 @@ def add_by_doi(
 ) -> dict:
     """Fetch a citation by DOI, then validate/hash/rename/store it.
 
-    Returns ``not_found`` if no DB match (the agent falls back to manual).
+    Returns ``not_found`` if no DB match (the agent falls back to manual), and
+    passes a ``unavailable`` search result straight through — a rate-limited
+    lookup must not be answered with "add it by hand".
     """
     imported = _try_import_from_central(lib, file)
     if imported is not None:
         return imported
     result = run_search(doi=doi)
+    if result["status"] == "unavailable":
+        return {
+            "status": "unavailable",
+            "doi": doi,
+            "unavailable_sources": result["unavailable_sources"],
+            "hint": result["suggested_next"],
+        }
     if result["status"] != "ok":
         return {
             "status": "not_found",
