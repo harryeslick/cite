@@ -1,5 +1,12 @@
 # cite
 
+> **Archived (2026-10-28).** Development continues in the research suite
+> monorepo at `~/Developer/ai/suite-tools/packages/cite/`, which has the full
+> history of this repo. The `cite` skill is now at
+> `suite-tools/plugin/skills/cite/`. To install the current version, run
+> `uv tool install --force ~/Developer/ai/suite-tools/packages/cite`. Do not
+> make changes here.
+
 A small **deterministic** citation/reference manager designed to be driven by an
 AI agent. The agent does the fuzzy work (identify a file, choose the right
 database match, ask the user for missing facts); `cite` does the mechanical,
