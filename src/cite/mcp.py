@@ -64,6 +64,11 @@ To ADD a file, always work the workflow in order — do not jump to add_manual:
   step 3/4 (same bytes) — the add result reports `extracted: true`, and the slow
   VLM pass is never repeated.
 
+  Every add is also copied to the central library at ~/.cite/. If the file's bytes
+  are already there, the add files that copy and skips search — the result has
+  `source: "central"`; do not search again. To reuse a reference from another
+  project, find it with list_refs(central=True), then pull(id).
+
 Call guide() once if you are unsure of a flag, a cite_type, or its required fields.
 
 These tools are fast and deterministic: call them directly and read each JSON

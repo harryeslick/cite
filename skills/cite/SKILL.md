@@ -1,6 +1,6 @@
 ---
 name: cite
-description: Add a file to the citation/reference manager and produce a standard citation. Use when the user asks to add a paper, report, dataset, book, or web page to their reference library, citation manager, or "the library"; to look up a citation by DOI or title; or to rename/catalogue a document by its bibliographic details. Wraps the deterministic `cite` CLI.
+description: Add a file to the citation/reference manager and produce a standard citation. Use when the user asks to add a paper, report, dataset, book, or web page to their reference library, citation manager, or "the library"; to look up a citation by DOI or title; to reuse a reference from another project; or to rename/catalogue a document by its bibliographic details. Wraps the deterministic `cite` CLI.
 ---
 
 # cite — citation/reference manager
@@ -74,6 +74,20 @@ back with `cite text <id> --supplement <n>`.
 **Never `cite add` these as references of their own.** They have no citation
 metadata, cannot produce a well-formed id, and would appear in `list` and
 `export` as citable works.
+
+## The central library (`~/.cite/`) remembers every add
+
+Every add in any project is also copied to `~/.cite/`. Two consequences:
+
+- **`status: added` with `"source": "central"`** means the file was filed
+  before, in some project, and the add copied that record. It is complete —
+  do not search or validate again.
+- **Reuse before you search.** When the user wants a work they filed in another
+  project, run `cite list --central`, then `cite pull <id>`. This is faster than
+  search, and it brings the extracted markdown and supplements too.
+
+`cite remove <id>` removes only the project copy. Do not add `--central`
+unless the user asks to delete the reference from every project.
 
 ## If a result looks impossible
 

@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The central library is now documented.** It shipped earlier without docs for users or agents: every add copies its bundle to `~/.cite/`, a later add of the same bytes copies it back and skips search (`source: "central"`), `cite pull <id>` copies a reference into a project, `cite list --central` / `cite remove --central` operate on it, and `cite update` updates the central copy. `cite guide` now lists `pull` and the `--central` flags; `AGENTS.md`, `skills/cite/SKILL.md`, the `cite-mcp` instructions and the README describe the feature, and the README roadmap no longer lists it as future work. The README "One central library" setup (`$CITE_LIBRARY`) is renamed "One shared library", so it is not confused with `~/.cite/`.
+
+### Removed
+
+- A second, unused definition of `ops.pull`. Python used only the later definition, so behaviour does not change: `pull` returns no `record`.
+
 ## [0.4.0] - 2026-08-10
 
 ### Added

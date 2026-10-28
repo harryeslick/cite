@@ -70,6 +70,19 @@ prints one JSON object with a `status` field — read it and follow
   `search` queries the network; `validate` checks a CSL-JSON record on stdin
   against a `--type` and takes no record id — it does not read the library.
 
+## Central library (`~/.cite/`)
+- Every successful add in any project also copies the bundle to the central
+  library at `~/.cite/`. It is created automatically on the first add; it is
+  the one library that needs no `cite init`.
+- If you add a file whose bytes are already in central, the add copies that
+  bundle and skips search. The result has `status: added, source: central`.
+  Do not search again.
+- To reuse a reference from another project: `uv run cite list --central`, then
+  `uv run cite pull <id>`. `duplicate` means the project already has it — stop.
+- `cite update` also updates the central copy. `cite remove <id>` removes only
+  the project copy; `cite remove <id> --central` removes the central copy.
+- When the project library *is* `~/.cite/`, there is no sync.
+
 ## Optional: full-text markdown
 - `cite prepare <file>` extracts markdown before adding, for citation context,
   and the later add adopts the staged markdown for the same bytes.

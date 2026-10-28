@@ -738,44 +738,6 @@ def get(lib: Library, id: str) -> dict:
         return {"status": "not_found", "id": namespaced_id(stem)}
 
 
-def pull(lib: Library, id: str) -> dict:
-    """Copy a reference from the central library into ``lib``.
-
-    The explicit cross-project reuse path: the user browses central (``list
-    --central``), picks an id, and pulls it into the current project. The bundle
-    is a full, independent copy — no ongoing link. Returns ``not_found`` when the
-    id is absent centrally, ``duplicate`` when the project already has those bytes.
-    """
-    central = resolve_central()
-    if not central.is_initialized():
-        return {
-            "status": "error",
-            "message": "no central library at ~/.cite/ (nothing has been added yet)",
-        }
-    stem = local_id(id)
-    try:
-        central_record = central.read_record(stem)
-    except FileNotFoundError:
-        return {"status": "not_found", "id": namespaced_id(stem)}
-
-    prov = central_record.get(PROVENANCE_KEY, {})
-    file_hash = prov.get("file_hash")
-    if file_hash and lib.find_by_hash(file_hash):
-        return {
-            "status": "duplicate",
-            "id": namespaced_id(stem),
-            "message": "same file already in project library",
-        }
-
-    central.copy_bundle_to(stem, lib)
-    return {
-        "status": "pulled",
-        "id": namespaced_id(stem),
-        "cite_type": prov.get("cite_type"),
-        "new_filename": prov.get("new_filename"),
-        "record": central_record,
-    }
-
 
 def remove(lib: Library, id: str) -> dict:
     """Remove a reference bundle (record + file + extracted artifacts), all-or-nothing."""

@@ -61,10 +61,33 @@ explicitly is used literally and never searched from — you asked for that path
 
 Two common setups:
 
-- **One central library** (a single personal collection reachable everywhere) —
-  add `export CITE_LIBRARY="$HOME/citations"` to your shell profile.
 - **Per-project library** — keep a `library/` in the project root and let the
   upward search find it from any subdirectory.
+- **One shared library** for all work — add
+  `export CITE_LIBRARY="$HOME/citations"` to your shell profile.
+
+Either way, cite also keeps a **central library** at `~/.cite/` (see below).
+
+### The central library (`~/.cite/`)
+
+Every successful add, in any library, also copies the reference bundle to
+`~/.cite/`. cite creates it on the first add — it is the one library that needs
+no `cite init`. The path is fixed; it is not configurable.
+
+- **Smart add.** If you add a file whose bytes are already in central, cite
+  copies that bundle into the project and skips search, validation and
+  extraction. The result has `"source": "central"`.
+- **Pull.** `cite list --central` shows the central library;
+  `cite pull <id>` copies one reference into the current project. The copy is
+  independent: later edits in either place do not reach the other, except as
+  below.
+- **Update.** `cite update` in a project also updates the central copy (matched
+  by content hash, so a renamed id still matches).
+- **Remove.** `cite remove <id>` deletes only the project copy. Use
+  `cite remove <id> --central` to delete the central copy.
+
+If `$CITE_LIBRARY` points at `~/.cite/` itself, there is no sync — the project
+library and the central library are the same directory.
 
 `cite.toml` is the marker that makes a directory a real library — `cite init`
 is the *only* command that creates one (it asks for confirmation unless you pass
@@ -162,11 +185,12 @@ branches; inspect `status` rather than the exit code.
 | `cite add <file> --csl -`                               | Add from a CSL-JSON record on stdin (e.g. a chosen search candidate). |
 | `cite add <file> --manual --type <t> --field k=v ...`   | Add a record built from fields.                                       |
 | `cite validate --type <t> --csl -`                      | Report which required fields a record is missing.                     |
-| `cite list [--full]`                                    | List references.                                                      |
+| `cite list [--full] [--central]`                        | List references (`--central`: the `~/.cite/` library).                |
+| `cite pull <id>`                                        | Copy a reference from `~/.cite/` into the current project library.    |
 | `cite get <id>`                                         | Print one record.                                                     |
 | `cite doctor`                                           | Health-check the whole library (bad JSON, missing fields/files, orphans). |
 | `cite doctor --self`                                    | Health-check the *install*: extras present, `cite-mcp` startable, which library resolved. |
-| `cite remove <id>`                                      | Remove a reference (deletes its whole bundle directory).              |
+| `cite remove <id> [--central]`                          | Remove a reference (deletes its whole bundle directory).              |
 | `cite extract <id> [--engine auto\|text\|vlm] [--enrich formula,code]` | Extract full markdown via a local Docling pipeline (optional, see below). |
 | `cite add-supplement <id> <file> [--label "<l>"]`       | Attach supplementary material to an existing reference (see below).   |
 | `cite text <id> [--path-only] [--supplement <n>]`       | Print a reference's extracted markdown (or its path), or a supplement's. |
@@ -228,8 +252,6 @@ Ideas not yet implemented, in rough priority order:
   project — e.g. "machine learning", "climate science" — without reorganizing
   the core library. Could be backed by metadata tags in the `_provenance` block
   or a simple topic-to-id mapping file.
-
-- **centralised library** at user level. copies selected files into project dir when required. prevents user level duplication between projects.
 
 ## Supplementary material
 
